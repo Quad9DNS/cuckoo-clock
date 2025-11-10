@@ -37,6 +37,7 @@ fn bench_large(c: &mut Criterion) {
         bucket_size: 4,
         max_entries: 100_000,
         max_kicks: 500,
+        lru_enabled: false,
     });
     let empty_filter =
         CuckooFilter::<DefaultHasher>::new(cuckoo_clock::filter::CuckooConfiguration {
@@ -44,6 +45,7 @@ fn bench_large(c: &mut Criterion) {
             bucket_size: 4,
             max_entries: 100_000,
             max_kicks: 500,
+            lru_enabled: false,
         });
 
     // Prepopulate
@@ -67,6 +69,7 @@ fn bench_large_fingeprint(c: &mut Criterion) {
         bucket_size: 8,
         max_entries: 1_000_000,
         max_kicks: 500,
+        lru_enabled: false,
     });
     let empty_filter =
         CuckooFilter::<DefaultHasher>::new(cuckoo_clock::filter::CuckooConfiguration {
@@ -74,6 +77,7 @@ fn bench_large_fingeprint(c: &mut Criterion) {
             bucket_size: 8,
             max_entries: 1_000_000,
             max_kicks: 500,
+            lru_enabled: false,
         });
 
     // Prepopulate
@@ -97,6 +101,7 @@ fn bench_large_buckets(c: &mut Criterion) {
         bucket_size: 100,
         max_entries: 1_000_000,
         max_kicks: 500,
+        lru_enabled: false,
     });
     let empty_filter =
         CuckooFilter::<DefaultHasher>::new(cuckoo_clock::filter::CuckooConfiguration {
@@ -104,6 +109,7 @@ fn bench_large_buckets(c: &mut Criterion) {
             bucket_size: 100,
             max_entries: 1_000_000,
             max_kicks: 500,
+            lru_enabled: false,
         });
 
     // Prepopulate

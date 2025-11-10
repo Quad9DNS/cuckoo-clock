@@ -1,11 +1,12 @@
 use std::{
     hash::{Hash, Hasher},
+    io::{Read, repeat},
     iter::repeat_with,
     marker::PhantomData,
     sync::{Arc, Mutex},
 };
 
-use crate::bucket::{Bucket, Fingerprint};
+use crate::bucket::{Bucket, DataBlock, Fingerprint};
 
 #[derive(Clone)]
 pub struct CuckooFilter<H> {
@@ -22,6 +23,7 @@ pub struct CuckooConfiguration {
     pub bucket_size: usize,
     pub max_entries: usize,
     pub max_kicks: usize,
+    pub lru_enabled: bool,
 }
 
 #[derive(Clone)]
@@ -91,19 +93,42 @@ where
         }
 
         let mut cur_index = i1;
-        let mut cur_fp = fp;
+        let fp_data = fp.data();
+        let mut fp_data = fp_data
+            .iter()
+            .cloned()
+            .chain(std::iter::repeat_n(
+                0u8,
+                DataBlock::<'_>::get_size(&self.configuration, &self.derived) - fp_data.len(),
+            ))
+            .collect::<Vec<_>>();
+        let data = fp_data.as_mut_slice();
+        let mut cur_data_block = DataBlock::<'_>::from(data);
         for _ in 0..self.configuration.max_kicks {
-            // Replace a random item first
-            cur_fp = self.buckets[cur_index as usize]
-                .lock()
-                .expect("mutex poisoned")
-                .kick_random(&cur_fp, &self.configuration, &self.derived);
-            cur_index = self.alt_index(&cur_fp, cur_index);
+            {
+                let mut bucket = self.buckets[cur_index as usize]
+                    .lock()
+                    .expect("mutex poisoned");
+                // Replace a random item first
+                if self.configuration.lru_enabled {
+                    if !bucket.kick_lru(&mut cur_data_block, &self.configuration, &self.derived) {
+                        return;
+                    }
+                } else {
+                    bucket.kick_random(&mut cur_data_block, &self.configuration, &self.derived);
+                }
+                cur_index =
+                    self.alt_index(&cur_data_block.get_fingerprint(&self.derived), cur_index);
+            }
 
             if self.buckets[cur_index as usize]
                 .lock()
                 .expect("mutex poisoned")
-                .insert(&cur_fp, &self.configuration, &self.derived)
+                .insert(
+                    &cur_data_block.get_fingerprint(&self.derived),
+                    &self.configuration,
+                    &self.derived,
+                )
             {
                 // Found an alternative spot for evicted item, done with kicks
                 return;
@@ -192,6 +217,7 @@ mod tests {
             bucket_size: 4,
             max_entries: 1000,
             max_kicks: 500,
+            lru_enabled: false,
         }
     }
 
@@ -215,5 +241,51 @@ mod tests {
         filter.remove("basic");
 
         assert!(!filter.contains("basic"));
+    }
+
+    #[test]
+    fn lru_insertion() {
+        let filter = CuckooFilter::<DefaultHasher>::new(CuckooConfiguration {
+            fingerprint_bits: 8,
+            bucket_size: 2,
+            max_entries: 8,
+            max_kicks: 500,
+            lru_enabled: true,
+        });
+
+        filter.insert("test");
+        filter.contains("test"); // Make it more used than others
+
+        filter.insert("test-1"); // Sharing the same bucket as "test", but less used
+
+        filter.insert("test8"); // Another bucket, but also valid for "test" bucket
+        filter.contains("test8"); // Make it more used
+
+        filter.insert("test25"); // Takes bucket of "test8", but less used
+
+        // Everything fits now
+        assert!(filter.contains("test"));
+        assert!(filter.contains("test-1"));
+        assert!(filter.contains("test8"));
+        assert!(filter.contains("test25"));
+
+        // Insert a new item which has to take one of the 2 fully occupied buckets
+        filter.insert("test85");
+
+        assert!(filter.contains("test85"));
+        assert!(filter.contains("test"));
+        assert!(filter.contains("test8"));
+
+        // Either test test25 or test-1 should be missing
+        assert!(
+            !filter.contains("test25") || !filter.contains("test-1"),
+            "No inserted items are missing, but filter can't hold them all"
+        );
+
+        // Insert both of these items again and confirm the more used ones are still there
+        filter.insert("test25");
+        filter.insert("test-1");
+        assert!(filter.contains("test"));
+        assert!(filter.contains("test8"));
     }
 }
