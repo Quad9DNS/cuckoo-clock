@@ -4,6 +4,7 @@ use std::{
     iter::repeat_with,
     marker::PhantomData,
     sync::{Arc, Mutex},
+    time::Instant,
 };
 
 use crate::bucket::{Bucket, DataBlock, Fingerprint};
@@ -16,20 +17,27 @@ pub struct CuckooFilter<H> {
     _hasher: PhantomData<H>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CuckooConfiguration {
     // Max 32
     pub fingerprint_bits: usize,
     pub bucket_size: usize,
     pub max_entries: usize,
     pub max_kicks: usize,
+    // LRU
     pub lru_enabled: bool,
+    // TTL
+    pub ttl_enabled: bool,
+    pub ttl: u32,
+    pub ttl_bits: usize,
+    pub ttl_resolution: usize,
 }
 
 #[derive(Clone)]
 pub(crate) struct DerivedConfiguration {
     // Max 4
     pub(crate) fingerprint_bytes: usize,
+    pub(crate) ttl_bytes: usize,
     pub(crate) fingerprint_mask: u32,
     pub(crate) bucket_count: usize,
     pub(crate) buckets_mask: u32,
@@ -49,14 +57,16 @@ where
         }
         let derived = DerivedConfiguration {
             fingerprint_bytes: configuration.fingerprint_bits.div_ceil(8),
+            ttl_bytes: configuration.ttl_bits.div_ceil(8),
             fingerprint_mask: (1u32 << configuration.fingerprint_bits) - 1,
             bucket_count,
             buckets_mask: (bucket_count - 1) as u32,
         };
+        let now = Instant::now();
         Self {
             configuration: configuration.clone(),
             buckets: Vec::from_iter(
-                repeat_with(|| Bucket::new(&configuration, &derived).into())
+                repeat_with(|| Bucket::new(&configuration, &derived, now).into())
                     .take(derived.bucket_count),
             )
             .into(),
@@ -71,11 +81,12 @@ where
 
     pub fn insert<K: Hash + ?Sized>(&self, key: &K) {
         let (fp, i1) = self.get_fingerprint_and_index(key);
+        let now = Instant::now();
 
         let inserted = self.buckets[i1 as usize]
             .lock()
             .expect("mutex poisoned")
-            .insert(&fp, &self.configuration, &self.derived);
+            .insert(&fp, &self.configuration, &self.derived, now);
 
         if inserted {
             return;
@@ -86,7 +97,7 @@ where
         let inserted = self.buckets[i2 as usize]
             .lock()
             .expect("mutex poisoned")
-            .insert(&fp, &self.configuration, &self.derived);
+            .insert(&fp, &self.configuration, &self.derived, now);
 
         if inserted {
             return;
@@ -128,6 +139,7 @@ where
                     &cur_data_block.get_fingerprint(&self.derived),
                     &self.configuration,
                     &self.derived,
+                    now,
                 )
             {
                 // Found an alternative spot for evicted item, done with kicks
@@ -140,18 +152,19 @@ where
 
     pub fn contains<K: Hash + ?Sized>(&self, key: &K) -> bool {
         let (fp, i1) = self.get_fingerprint_and_index(key);
+        let now = Instant::now();
 
         let mut contains = self.buckets[i1 as usize]
             .lock()
             .expect("mutex poisoned")
-            .contains(&fp, &self.configuration, &self.derived);
+            .contains(&fp, &self.configuration, &self.derived, now);
 
         if !contains {
             let i2 = self.alt_index(&fp, i1);
             contains = self.buckets[i2 as usize]
                 .lock()
                 .expect("mutex poisoned")
-                .contains(&fp, &self.configuration, &self.derived);
+                .contains(&fp, &self.configuration, &self.derived, now);
         }
 
         contains
@@ -218,6 +231,10 @@ mod tests {
             max_entries: 1000,
             max_kicks: 500,
             lru_enabled: false,
+            ttl_enabled: false,
+            ttl: 0,
+            ttl_bits: 0,
+            ttl_resolution: 0,
         }
     }
 
@@ -246,11 +263,8 @@ mod tests {
     #[test]
     fn lru_insertion() {
         let filter = CuckooFilter::<DefaultHasher>::new(CuckooConfiguration {
-            fingerprint_bits: 8,
-            bucket_size: 2,
-            max_entries: 8,
-            max_kicks: 500,
             lru_enabled: true,
+            ..default_configuration()
         });
 
         filter.insert("test");

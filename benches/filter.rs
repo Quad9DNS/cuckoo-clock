@@ -1,7 +1,21 @@
 use std::hash::{DefaultHasher, Hasher};
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use cuckoo_clock::filter::CuckooFilter;
+use cuckoo_clock::filter::{CuckooConfiguration, CuckooFilter};
+
+fn default_configuration() -> CuckooConfiguration {
+    CuckooConfiguration {
+        fingerprint_bits: 8,
+        bucket_size: 4,
+        max_entries: 100_000,
+        max_kicks: 500,
+        lru_enabled: false,
+        ttl_enabled: false,
+        ttl_bits: 32,
+        ttl_resolution: 1,
+        ttl: 100,
+    }
+}
 
 fn run_benchmark<H: Hasher + Default>(
     c: &mut Criterion,
@@ -32,21 +46,8 @@ fn run_benchmark<H: Hasher + Default>(
 }
 
 fn bench_large(c: &mut Criterion) {
-    let filter = CuckooFilter::<DefaultHasher>::new(cuckoo_clock::filter::CuckooConfiguration {
-        fingerprint_bits: 8,
-        bucket_size: 4,
-        max_entries: 100_000,
-        max_kicks: 500,
-        lru_enabled: false,
-    });
-    let empty_filter =
-        CuckooFilter::<DefaultHasher>::new(cuckoo_clock::filter::CuckooConfiguration {
-            fingerprint_bits: 8,
-            bucket_size: 4,
-            max_entries: 100_000,
-            max_kicks: 500,
-            lru_enabled: false,
-        });
+    let filter = CuckooFilter::<DefaultHasher>::new(default_configuration());
+    let empty_filter = CuckooFilter::<DefaultHasher>::new(default_configuration());
 
     // Prepopulate
     (0..filter.get_bucket_count()).for_each(|i| {
@@ -64,21 +65,16 @@ fn bench_large(c: &mut Criterion) {
 }
 
 fn bench_large_fingeprint(c: &mut Criterion) {
-    let filter = CuckooFilter::<DefaultHasher>::new(cuckoo_clock::filter::CuckooConfiguration {
+    let filter = CuckooFilter::<DefaultHasher>::new(CuckooConfiguration {
         fingerprint_bits: 32,
-        bucket_size: 8,
         max_entries: 1_000_000,
-        max_kicks: 500,
-        lru_enabled: false,
+        ..default_configuration()
     });
-    let empty_filter =
-        CuckooFilter::<DefaultHasher>::new(cuckoo_clock::filter::CuckooConfiguration {
-            fingerprint_bits: 32,
-            bucket_size: 8,
-            max_entries: 1_000_000,
-            max_kicks: 500,
-            lru_enabled: false,
-        });
+    let empty_filter = CuckooFilter::<DefaultHasher>::new(CuckooConfiguration {
+        fingerprint_bits: 32,
+        max_entries: 1_000_000,
+        ..default_configuration()
+    });
 
     // Prepopulate
     (0..filter.get_bucket_count()).for_each(|i| {
@@ -96,21 +92,18 @@ fn bench_large_fingeprint(c: &mut Criterion) {
 }
 
 fn bench_large_buckets(c: &mut Criterion) {
-    let filter = CuckooFilter::<DefaultHasher>::new(cuckoo_clock::filter::CuckooConfiguration {
+    let filter = CuckooFilter::<DefaultHasher>::new(CuckooConfiguration {
         fingerprint_bits: 32,
         bucket_size: 100,
         max_entries: 1_000_000,
-        max_kicks: 500,
-        lru_enabled: false,
+        ..default_configuration()
     });
-    let empty_filter =
-        CuckooFilter::<DefaultHasher>::new(cuckoo_clock::filter::CuckooConfiguration {
-            fingerprint_bits: 32,
-            bucket_size: 100,
-            max_entries: 1_000_000,
-            max_kicks: 500,
-            lru_enabled: false,
-        });
+    let empty_filter = CuckooFilter::<DefaultHasher>::new(CuckooConfiguration {
+        fingerprint_bits: 32,
+        bucket_size: 100,
+        max_entries: 1_000_000,
+        ..default_configuration()
+    });
 
     // Prepopulate
     (0..filter.get_bucket_count()).for_each(|i| {

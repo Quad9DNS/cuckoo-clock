@@ -1,3 +1,8 @@
+use std::{
+    iter::repeat_n,
+    time::{Duration, Instant},
+};
+
 use crate::filter::{CuckooConfiguration, DerivedConfiguration};
 
 #[derive(Hash, Clone, PartialEq, Eq)]
@@ -54,6 +59,7 @@ impl From<Fingerprint> for Box<[u8]> {
 
 pub(crate) struct Bucket {
     data: Vec<u8>,
+    pub(crate) ttl_baseline: Instant,
 }
 
 pub(crate) struct DataBlock<'a>(&'a mut [u8]);
@@ -69,11 +75,14 @@ impl<'a> DataBlock<'a> {
         configuration: &CuckooConfiguration,
         derived: &DerivedConfiguration,
     ) -> usize {
+        let mut size = derived.fingerprint_bytes;
         if configuration.lru_enabled {
-            derived.fingerprint_bytes + 1
-        } else {
-            derived.fingerprint_bytes
+            size += 1;
         }
+        if configuration.ttl_enabled {
+            size += derived.ttl_bytes
+        }
+        size
     }
 
     pub(crate) fn get_fingerprint(&self, derived: &DerivedConfiguration) -> Fingerprint {
@@ -95,8 +104,17 @@ impl<'a> DataBlock<'a> {
     ) {
         self.0[0..derived.fingerprint_bytes]
             .copy_from_slice(&Fingerprint::new_empty(derived.fingerprint_bytes).data);
+        let mut rest_start = derived.fingerprint_bytes;
         if configuration.lru_enabled {
-            self.0[derived.fingerprint_bytes] = 0;
+            self.0[rest_start] = 0;
+            rest_start += 1;
+        }
+        if configuration.ttl_enabled {
+            self.0[rest_start..rest_start + derived.ttl_bytes].copy_from_slice(&vec![
+                0;
+                derived
+                    .ttl_bytes
+            ]);
         }
     }
 
@@ -132,17 +150,62 @@ impl<'a> DataBlock<'a> {
     pub(crate) fn get_lru_counter_mut(&mut self, derived: &DerivedConfiguration) -> &mut u8 {
         &mut self.0[derived.fingerprint_bytes]
     }
+
+    pub(crate) fn get_ttl(
+        &self,
+        configuration: &CuckooConfiguration,
+        derived: &DerivedConfiguration,
+    ) -> u32 {
+        let mut ttl_start = derived.fingerprint_bytes;
+        if configuration.lru_enabled {
+            ttl_start += 1;
+        }
+        let ttl_bytes = &self.0[ttl_start..ttl_start + derived.ttl_bytes];
+        let padding = repeat_n(0u8, 4 - ttl_bytes.len())
+            .chain(ttl_bytes.iter().copied())
+            .take(4)
+            .collect::<Vec<_>>();
+        u32::from_be_bytes(
+            padding
+                .try_into()
+                .expect("TTL was not properly padded to 4 bytes!"),
+        )
+    }
+
+    pub(crate) fn set_ttl(
+        &mut self,
+        configuration: &CuckooConfiguration,
+        derived: &DerivedConfiguration,
+        ttl: u32,
+    ) {
+        let mut ttl_start = derived.fingerprint_bytes;
+        if configuration.lru_enabled {
+            ttl_start += 1;
+        }
+        self.0[ttl_start..ttl_start + derived.ttl_bytes]
+            .copy_from_slice(&ttl.to_be_bytes()[0..derived.ttl_bytes]);
+    }
 }
 
 impl Bucket {
-    pub(crate) fn new(configuration: &CuckooConfiguration, derived: &DerivedConfiguration) -> Self {
+    pub(crate) fn new(
+        configuration: &CuckooConfiguration,
+        derived: &DerivedConfiguration,
+        now: Instant,
+    ) -> Self {
         Self {
             data: vec![
                 0;
                 configuration.bucket_size
                     * (derived.fingerprint_bytes
-                        + (if configuration.lru_enabled { 1 } else { 0 }))
+                        + (if configuration.lru_enabled { 1 } else { 0 })
+                        + (if configuration.ttl_enabled {
+                            derived.ttl_bytes
+                        } else {
+                            0
+                        }))
             ],
+            ttl_baseline: now,
         }
     }
 
@@ -151,20 +214,67 @@ impl Bucket {
         fingerprint: &Fingerprint,
         configuration: &CuckooConfiguration,
         derived: &DerivedConfiguration,
+        now: Instant,
     ) -> bool {
+        let baseline = self.ttl_baseline;
         for i in 0..configuration.bucket_size {
             let mut data = self.get_data_block(i, configuration, derived);
             let stored = data.get_fingerprint(derived);
 
-            if stored == *fingerprint {
-                if configuration.lru_enabled {
-                    self.increment_lru_counter(i, configuration, derived);
-                }
-                return true;
-            } else if stored.is_empty() {
-                data.store_fingerprint(fingerprint, derived);
-                return true;
+            let mut current_ttl = None;
+            if configuration.ttl_enabled {
+                current_ttl = Some(data.get_ttl(configuration, derived));
             }
+            let reinsert = stored == *fingerprint;
+
+            if !reinsert && stored.is_empty()
+                || (current_ttl.is_some_and(|t| {
+                    baseline + (Duration::from_secs(t.into()) * configuration.ttl_resolution as u32)
+                        <= now
+                }))
+            {
+                data.store_fingerprint(fingerprint, derived);
+            } else if !reinsert {
+                continue;
+            }
+
+            let mut ttl_to_store = 0;
+
+            if configuration.ttl_enabled {
+                ttl_to_store = (now - baseline).as_secs() as u32
+                    / (configuration.ttl_resolution as u32)
+                    + configuration.ttl;
+                // TTL is too big to store, move up the baseline and readjust
+                if ttl_to_store as u64 > 2u64.pow(configuration.ttl_bits as u32) {
+                    let diff = now - baseline;
+                    self.ttl_baseline += diff;
+                    ttl_to_store -= diff.as_secs() as u32 / configuration.ttl_resolution as u32;
+
+                    for i in 0..configuration.bucket_size {
+                        let item_ttl = self
+                            .get_data_block(i, configuration, derived)
+                            .get_ttl(configuration, derived);
+                        let item_ttl = item_ttl.saturating_sub(
+                            diff.as_secs() as u32 / configuration.ttl_resolution as u32,
+                        );
+                        self.get_data_block(i, configuration, derived).set_ttl(
+                            configuration,
+                            derived,
+                            item_ttl,
+                        );
+                    }
+                }
+            }
+
+            // Fetch data again for borrow checker
+            let mut data = self.get_data_block(i, configuration, derived);
+            if configuration.ttl_enabled {
+                data.set_ttl(configuration, derived, ttl_to_store);
+            }
+            if reinsert && configuration.lru_enabled {
+                self.increment_lru_counter(i, configuration, derived);
+            }
+            return true;
         }
         false
     }
@@ -214,12 +324,25 @@ impl Bucket {
         fingerprint: &Fingerprint,
         configuration: &CuckooConfiguration,
         derived: &DerivedConfiguration,
+        now: Instant,
     ) -> bool {
+        let baseline = self.ttl_baseline;
         for i in 0..configuration.bucket_size {
-            let data = self.get_data_block(i, configuration, derived);
+            let mut data = self.get_data_block(i, configuration, derived);
             let stored = data.get_fingerprint(derived);
 
             if stored == *fingerprint {
+                if configuration.ttl_enabled {
+                    let ttl = data.get_ttl(configuration, derived);
+                    if baseline
+                        + Duration::from_secs(ttl as u64) * configuration.ttl_resolution as u32
+                        <= now
+                    {
+                        // Expired item
+                        data.reset(configuration, derived);
+                        return false;
+                    }
+                }
                 if configuration.lru_enabled {
                     self.increment_lru_counter(i, configuration, derived);
                 }
