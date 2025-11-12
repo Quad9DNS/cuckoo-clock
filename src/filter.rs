@@ -1,13 +1,15 @@
 use std::{
     hash::{Hash, Hasher},
-    io::{Read, repeat},
     iter::repeat_with,
     marker::PhantomData,
     sync::{Arc, Mutex},
     time::Instant,
 };
 
-use crate::bucket::{Bucket, DataBlock, Fingerprint};
+use crate::{
+    bucket::Bucket,
+    data_block::{DataBlock, Fingerprint},
+};
 
 #[derive(Clone)]
 pub struct CuckooFilter<H> {
@@ -47,11 +49,8 @@ pub(crate) struct DerivedConfiguration {
     pub(crate) buckets_mask: u32,
 }
 
-impl<H> CuckooFilter<H>
-where
-    H: Hasher + Default,
-{
-    pub fn new(configuration: CuckooConfiguration) -> Self {
+impl DerivedConfiguration {
+    pub(crate) fn derive(configuration: &CuckooConfiguration) -> Self {
         let required_bucket_count = configuration
             .max_entries
             .div_ceil(configuration.bucket_size);
@@ -59,14 +58,23 @@ where
         while bucket_count < required_bucket_count {
             bucket_count = (bucket_count + 1).next_power_of_two();
         }
-        let derived = DerivedConfiguration {
+        Self {
             fingerprint_bytes: configuration.fingerprint_bits.div_ceil(8),
             ttl_bytes: configuration.ttl_bits.div_ceil(8),
             counter_bytes: configuration.counter_bits.div_ceil(8),
             fingerprint_mask: (1u32 << configuration.fingerprint_bits) - 1,
             bucket_count,
             buckets_mask: (bucket_count - 1) as u32,
-        };
+        }
+    }
+}
+
+impl<H> CuckooFilter<H>
+where
+    H: Hasher + Default,
+{
+    pub fn new(configuration: CuckooConfiguration) -> Self {
+        let derived = DerivedConfiguration::derive(&configuration);
         let now = Instant::now();
         Self {
             configuration: configuration.clone(),
@@ -91,7 +99,7 @@ where
         let inserted = self.buckets[i1 as usize]
             .lock()
             .expect("mutex poisoned")
-            .insert(&fp, &self.configuration, &self.derived, now);
+            .insert(&fp, &self.configuration, now);
 
         if inserted {
             return;
@@ -102,24 +110,16 @@ where
         let inserted = self.buckets[i2 as usize]
             .lock()
             .expect("mutex poisoned")
-            .insert(&fp, &self.configuration, &self.derived, now);
+            .insert(&fp, &self.configuration, now);
 
         if inserted {
             return;
         }
 
         let mut cur_index = i1;
-        let fp_data = fp.data();
-        let mut fp_data = fp_data
-            .iter()
-            .cloned()
-            .chain(std::iter::repeat_n(
-                0u8,
-                DataBlock::<'_>::get_size(&self.configuration, &self.derived) - fp_data.len(),
-            ))
-            .collect::<Vec<_>>();
-        let data = fp_data.as_mut_slice();
-        let mut cur_data_block = DataBlock::<'_>::from(data);
+        let mut data = vec![0u8; DataBlock::get_size(&self.configuration)];
+        let mut cur_data_block = DataBlock::<'_>::from(&mut data[..]);
+        cur_data_block.store_fingerprint(&fp, &self.configuration);
         for _ in 0..self.configuration.max_kicks {
             {
                 let mut bucket = self.buckets[cur_index as usize]
@@ -127,23 +127,24 @@ where
                     .expect("mutex poisoned");
                 // Replace a random item first
                 if self.configuration.lru_enabled {
-                    if !bucket.kick_lru(&mut cur_data_block, &self.configuration, &self.derived) {
+                    if !bucket.kick_lru(&mut cur_data_block, &self.configuration) {
                         return;
                     }
                 } else {
-                    bucket.kick_random(&mut cur_data_block, &self.configuration, &self.derived);
+                    bucket.kick_random(&mut cur_data_block, &self.configuration);
                 }
-                cur_index =
-                    self.alt_index(&cur_data_block.get_fingerprint(&self.derived), cur_index);
+                cur_index = self.alt_index(
+                    &cur_data_block.get_fingerprint(&self.configuration),
+                    cur_index,
+                );
             }
 
             if self.buckets[cur_index as usize]
                 .lock()
                 .expect("mutex poisoned")
                 .insert(
-                    &cur_data_block.get_fingerprint(&self.derived),
+                    &cur_data_block.get_fingerprint(&self.configuration),
                     &self.configuration,
-                    &self.derived,
                     now,
                 )
             {
@@ -162,14 +163,14 @@ where
         let mut contains = self.buckets[i1 as usize]
             .lock()
             .expect("mutex poisoned")
-            .contains(&fp, &self.configuration, &self.derived, now);
+            .contains(&fp, &self.configuration, now);
 
         if !contains {
             let i2 = self.alt_index(&fp, i1);
             contains = self.buckets[i2 as usize]
                 .lock()
                 .expect("mutex poisoned")
-                .contains(&fp, &self.configuration, &self.derived, now);
+                .contains(&fp, &self.configuration, now);
         }
 
         contains
@@ -181,14 +182,14 @@ where
         let mut removed = self.buckets[i1 as usize]
             .lock()
             .expect("mutex poisoned")
-            .remove(&fp, &self.configuration, &self.derived);
+            .remove(&fp, &self.configuration);
 
         if !removed {
             let i2 = self.alt_index(&fp, i1);
             removed = self.buckets[i2 as usize]
                 .lock()
                 .expect("mutex poisoned")
-                .remove(&fp, &self.configuration, &self.derived);
+                .remove(&fp, &self.configuration);
         }
 
         removed
@@ -205,11 +206,7 @@ where
         let index = result as u32 & self.derived.buckets_mask;
 
         (
-            Fingerprint::new(
-                fingerprint,
-                self.derived.fingerprint_bytes,
-                self.derived.fingerprint_mask,
-            ),
+            Fingerprint::new(fingerprint, self.derived.fingerprint_mask),
             index,
         )
     }
