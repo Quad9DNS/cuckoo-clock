@@ -31,6 +31,9 @@ pub struct CuckooConfiguration {
     pub ttl: u32,
     pub ttl_bits: usize,
     pub ttl_resolution: usize,
+    // Counter
+    pub counter_enabled: bool,
+    pub counter_bits: usize,
 }
 
 #[derive(Clone)]
@@ -38,6 +41,7 @@ pub(crate) struct DerivedConfiguration {
     // Max 4
     pub(crate) fingerprint_bytes: usize,
     pub(crate) ttl_bytes: usize,
+    pub(crate) counter_bytes: usize,
     pub(crate) fingerprint_mask: u32,
     pub(crate) bucket_count: usize,
     pub(crate) buckets_mask: u32,
@@ -58,6 +62,7 @@ where
         let derived = DerivedConfiguration {
             fingerprint_bytes: configuration.fingerprint_bits.div_ceil(8),
             ttl_bytes: configuration.ttl_bits.div_ceil(8),
+            counter_bytes: configuration.counter_bits.div_ceil(8),
             fingerprint_mask: (1u32 << configuration.fingerprint_bits) - 1,
             bucket_count,
             buckets_mask: (bucket_count - 1) as u32,
@@ -235,6 +240,8 @@ mod tests {
             ttl: 0,
             ttl_bits: 0,
             ttl_resolution: 0,
+            counter_enabled: false,
+            counter_bits: 0,
         }
     }
 
@@ -260,6 +267,7 @@ mod tests {
         assert!(!filter.contains("basic"));
     }
 
+    // TODO: Replace with fake hasher and hashes for more control
     #[test]
     fn lru_insertion() {
         let filter = CuckooFilter::<DefaultHasher>::new(CuckooConfiguration {

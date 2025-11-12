@@ -80,7 +80,10 @@ impl<'a> DataBlock<'a> {
             size += 1;
         }
         if configuration.ttl_enabled {
-            size += derived.ttl_bytes
+            size += derived.ttl_bytes;
+        }
+        if configuration.counter_enabled {
+            size += derived.counter_bytes;
         }
         size
     }
@@ -102,20 +105,8 @@ impl<'a> DataBlock<'a> {
         configuration: &CuckooConfiguration,
         derived: &DerivedConfiguration,
     ) {
-        self.0[0..derived.fingerprint_bytes]
-            .copy_from_slice(&Fingerprint::new_empty(derived.fingerprint_bytes).data);
-        let mut rest_start = derived.fingerprint_bytes;
-        if configuration.lru_enabled {
-            self.0[rest_start] = 0;
-            rest_start += 1;
-        }
-        if configuration.ttl_enabled {
-            self.0[rest_start..rest_start + derived.ttl_bytes].copy_from_slice(&vec![
-                0;
-                derived
-                    .ttl_bytes
-            ]);
-        }
+        let size = Self::get_size(configuration, derived);
+        self.0[0..size].copy_from_slice(&vec![0u8; size]);
     }
 
     pub(crate) fn swap(
@@ -149,6 +140,86 @@ impl<'a> DataBlock<'a> {
 
     pub(crate) fn get_lru_counter_mut(&mut self, derived: &DerivedConfiguration) -> &mut u8 {
         &mut self.0[derived.fingerprint_bytes]
+    }
+
+    pub(crate) fn get_counter(
+        &self,
+        configuration: &CuckooConfiguration,
+        derived: &DerivedConfiguration,
+    ) -> u32 {
+        let mut counter_start = derived.fingerprint_bytes;
+        if configuration.lru_enabled {
+            counter_start += 1;
+        }
+        if configuration.ttl_enabled {
+            counter_start += derived.ttl_bytes;
+        }
+        let counter_bytes = &self.0[counter_start..counter_start + derived.counter_bytes];
+        let padding = repeat_n(0u8, 4 - counter_bytes.len())
+            .chain(counter_bytes.iter().copied())
+            .take(4)
+            .collect::<Vec<_>>();
+        u32::from_be_bytes(
+            padding
+                .try_into()
+                .expect("Counter was not properly padded to 4 bytes!"),
+        )
+    }
+
+    pub(crate) fn increment_counter(
+        &mut self,
+        configuration: &CuckooConfiguration,
+        derived: &DerivedConfiguration,
+        by: u32,
+    ) {
+        let mut counter_start = derived.fingerprint_bytes;
+        if configuration.lru_enabled {
+            counter_start += 1;
+        }
+        if configuration.ttl_enabled {
+            counter_start += derived.ttl_bytes;
+        }
+        let counter_bytes = &self.0[counter_start..counter_start + derived.counter_bytes];
+        let padding = repeat_n(0u8, 4 - counter_bytes.len())
+            .chain(counter_bytes.iter().copied())
+            .take(4)
+            .collect::<Vec<_>>();
+        let mut counter = u32::from_be_bytes(
+            padding
+                .try_into()
+                .expect("Counter was not properly padded to 4 bytes!"),
+        );
+        counter = counter.saturating_add(by);
+        self.0[counter_start..counter_start + derived.counter_bytes]
+            .copy_from_slice(&counter.to_be_bytes()[0..derived.counter_bytes]);
+    }
+
+    pub(crate) fn decrement_counter(
+        &mut self,
+        configuration: &CuckooConfiguration,
+        derived: &DerivedConfiguration,
+        by: u32,
+    ) {
+        let mut counter_start = derived.fingerprint_bytes;
+        if configuration.lru_enabled {
+            counter_start += 1;
+        }
+        if configuration.ttl_enabled {
+            counter_start += derived.ttl_bytes;
+        }
+        let counter_bytes = &self.0[counter_start..counter_start + derived.counter_bytes];
+        let padding = repeat_n(0u8, 4 - counter_bytes.len())
+            .chain(counter_bytes.iter().copied())
+            .take(4)
+            .collect::<Vec<_>>();
+        let mut counter = u32::from_be_bytes(
+            padding
+                .try_into()
+                .expect("Counter was not properly padded to 4 bytes!"),
+        );
+        counter = counter.saturating_sub(by);
+        self.0[counter_start..counter_start + derived.counter_bytes]
+            .copy_from_slice(&counter.to_be_bytes()[0..derived.counter_bytes]);
     }
 
     pub(crate) fn get_ttl(
@@ -203,6 +274,11 @@ impl Bucket {
                             derived.ttl_bytes
                         } else {
                             0
+                        })
+                        + (if configuration.counter_enabled {
+                            derived.counter_bytes
+                        } else {
+                            0
                         }))
             ],
             ttl_baseline: now,
@@ -227,15 +303,19 @@ impl Bucket {
             }
             let reinsert = stored == *fingerprint;
 
-            if !reinsert && stored.is_empty()
-                || (current_ttl.is_some_and(|t| {
+            if !reinsert {
+                if stored.is_empty() {
+                    data.store_fingerprint(fingerprint, derived);
+                } else if current_ttl.is_some_and(|t| {
                     baseline + (Duration::from_secs(t.into()) * configuration.ttl_resolution as u32)
                         <= now
-                }))
-            {
-                data.store_fingerprint(fingerprint, derived);
-            } else if !reinsert {
-                continue;
+                }) {
+                    // Clear out whatever TTL or other options it had
+                    data.reset(configuration, derived);
+                    data.store_fingerprint(fingerprint, derived);
+                } else {
+                    continue;
+                }
             }
 
             let mut ttl_to_store = 0;
@@ -270,6 +350,9 @@ impl Bucket {
             let mut data = self.get_data_block(i, configuration, derived);
             if configuration.ttl_enabled {
                 data.set_ttl(configuration, derived, ttl_to_store);
+            }
+            if configuration.counter_enabled {
+                data.increment_counter(configuration, derived, 1);
             }
             if reinsert && configuration.lru_enabled {
                 self.increment_lru_counter(i, configuration, derived);
@@ -342,6 +425,9 @@ impl Bucket {
                         data.reset(configuration, derived);
                         return false;
                     }
+                }
+                if configuration.counter_enabled {
+                    data.increment_counter(configuration, derived, 1);
                 }
                 if configuration.lru_enabled {
                     self.increment_lru_counter(i, configuration, derived);

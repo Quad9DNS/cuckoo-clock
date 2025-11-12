@@ -14,6 +14,8 @@ fn default_configuration() -> CuckooConfiguration {
         ttl_bits: 32,
         ttl_resolution: 1,
         ttl: 100,
+        counter_enabled: false,
+        counter_bits: 8,
     }
 }
 
