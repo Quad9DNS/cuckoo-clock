@@ -8,7 +8,7 @@ use std::{
 
 use crate::{
     bucket::Bucket,
-    data_block::{DataBlock, Fingerprint},
+    data_block::{DataBlock, DataBlockFieldConfiguration, Fingerprint},
 };
 
 #[derive(Clone)]
@@ -40,11 +40,11 @@ pub struct CuckooConfiguration {
 
 #[derive(Clone)]
 pub(crate) struct DerivedConfiguration {
-    // Max 4
-    pub(crate) fingerprint_bytes: usize,
-    pub(crate) ttl_bytes: usize,
-    pub(crate) counter_bytes: usize,
-    pub(crate) fingerprint_mask: u32,
+    pub(crate) fingerprint_field_config: DataBlockFieldConfiguration,
+    pub(crate) lru_field_config: DataBlockFieldConfiguration,
+    pub(crate) counter_field_config: DataBlockFieldConfiguration,
+    pub(crate) ttl_field_config: DataBlockFieldConfiguration,
+    pub(crate) data_block_size: usize,
     pub(crate) bucket_count: usize,
     pub(crate) buckets_mask: u32,
 }
@@ -58,11 +58,28 @@ impl DerivedConfiguration {
         while bucket_count < required_bucket_count {
             bucket_count = (bucket_count + 1).next_power_of_two();
         }
+        let ttl_start =
+            configuration.fingerprint_bits + if configuration.lru_enabled { 8 } else { 0 };
+        let counter_start = ttl_start
+            + if configuration.ttl_enabled {
+                configuration.ttl_bits
+            } else {
+                0
+            };
         Self {
-            fingerprint_bytes: configuration.fingerprint_bits.div_ceil(8),
-            ttl_bytes: configuration.ttl_bits.div_ceil(8),
-            counter_bytes: configuration.counter_bits.div_ceil(8),
-            fingerprint_mask: (1u32 << configuration.fingerprint_bits) - 1,
+            fingerprint_field_config: DataBlockFieldConfiguration::new(
+                0..configuration.fingerprint_bits,
+            ),
+            lru_field_config: DataBlockFieldConfiguration::new(
+                configuration.fingerprint_bits..configuration.fingerprint_bits + 8,
+            ),
+            ttl_field_config: DataBlockFieldConfiguration::new(
+                ttl_start..ttl_start + configuration.ttl_bits,
+            ),
+            counter_field_config: DataBlockFieldConfiguration::new(
+                counter_start..counter_start + configuration.ttl_bits,
+            ),
+            data_block_size: DataBlock::get_size(configuration),
             bucket_count,
             buckets_mask: (bucket_count - 1) as u32,
         }
@@ -99,7 +116,7 @@ where
         let inserted = self.buckets[i1 as usize]
             .lock()
             .expect("mutex poisoned")
-            .insert(&fp, &self.configuration, now);
+            .insert(&fp, &self.configuration, &self.derived, now);
 
         if inserted {
             return;
@@ -110,7 +127,7 @@ where
         let inserted = self.buckets[i2 as usize]
             .lock()
             .expect("mutex poisoned")
-            .insert(&fp, &self.configuration, now);
+            .insert(&fp, &self.configuration, &self.derived, now);
 
         if inserted {
             return;
@@ -119,7 +136,7 @@ where
         let mut cur_index = i1;
         let mut data = vec![0u8; DataBlock::get_size(&self.configuration)];
         let mut cur_data_block = DataBlock::<'_>::from(&mut data[..]);
-        cur_data_block.store_fingerprint(&fp, &self.configuration);
+        cur_data_block.store_fingerprint(&fp, &self.derived);
         for _ in 0..self.configuration.max_kicks {
             {
                 let mut bucket = self.buckets[cur_index as usize]
@@ -127,24 +144,23 @@ where
                     .expect("mutex poisoned");
                 // Replace a random item first
                 if self.configuration.lru_enabled {
-                    if !bucket.kick_lru(&mut cur_data_block, &self.configuration) {
+                    if !bucket.kick_lru(&mut cur_data_block, &self.configuration, &self.derived) {
                         return;
                     }
                 } else {
-                    bucket.kick_random(&mut cur_data_block, &self.configuration);
+                    bucket.kick_random(&mut cur_data_block, &self.configuration, &self.derived);
                 }
-                cur_index = self.alt_index(
-                    &cur_data_block.get_fingerprint(&self.configuration),
-                    cur_index,
-                );
+                cur_index =
+                    self.alt_index(&cur_data_block.get_fingerprint(&self.derived), cur_index);
             }
 
             if self.buckets[cur_index as usize]
                 .lock()
                 .expect("mutex poisoned")
                 .insert(
-                    &cur_data_block.get_fingerprint(&self.configuration),
+                    &cur_data_block.get_fingerprint(&self.derived),
                     &self.configuration,
+                    &self.derived,
                     now,
                 )
             {
@@ -163,14 +179,14 @@ where
         let mut contains = self.buckets[i1 as usize]
             .lock()
             .expect("mutex poisoned")
-            .contains(&fp, &self.configuration, now);
+            .contains(&fp, &self.configuration, &self.derived, now);
 
         if !contains {
             let i2 = self.alt_index(&fp, i1);
             contains = self.buckets[i2 as usize]
                 .lock()
                 .expect("mutex poisoned")
-                .contains(&fp, &self.configuration, now);
+                .contains(&fp, &self.configuration, &self.derived, now);
         }
 
         contains
@@ -182,14 +198,14 @@ where
         let mut removed = self.buckets[i1 as usize]
             .lock()
             .expect("mutex poisoned")
-            .remove(&fp, &self.configuration);
+            .remove(&fp, &self.configuration, &self.derived);
 
         if !removed {
             let i2 = self.alt_index(&fp, i1);
             removed = self.buckets[i2 as usize]
                 .lock()
                 .expect("mutex poisoned")
-                .remove(&fp, &self.configuration);
+                .remove(&fp, &self.configuration, &self.derived);
         }
 
         removed
@@ -206,7 +222,10 @@ where
         let index = result as u32 & self.derived.buckets_mask;
 
         (
-            Fingerprint::new(fingerprint, self.derived.fingerprint_mask),
+            Fingerprint::new(
+                fingerprint,
+                self.derived.fingerprint_field_config.value_mask(),
+            ),
             index,
         )
     }

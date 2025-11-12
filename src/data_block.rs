@@ -1,5 +1,5 @@
-use crate::filter::CuckooConfiguration;
-use std::ops::Range;
+use crate::filter::{CuckooConfiguration, DerivedConfiguration};
+use std::ops::{Range, RangeInclusive};
 
 #[derive(Debug, Hash, Clone, PartialEq, Eq)]
 pub(crate) struct Fingerprint {
@@ -31,6 +31,34 @@ impl From<u32> for Fingerprint {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct DataBlockFieldConfiguration {
+    bits: Range<usize>,
+    bytes: RangeInclusive<usize>,
+    mask: u32,
+    in_value_mask: u32,
+}
+
+impl DataBlockFieldConfiguration {
+    pub(crate) fn new(bits: Range<usize>) -> Self {
+        let start_byte = bits.start / 8; // Round down to take the lower byte
+        let end_byte = (bits.end - 1) / 8;
+        let bytes = start_byte..=end_byte;
+        let len = end_byte - start_byte + 1;
+        Self {
+            bits: bits.clone(),
+            bytes,
+            mask: !((u32::MAX << (32 - len * 8)) >> (bits.start - start_byte * 8)),
+            // TODO: Check if the +1 is needed?
+            in_value_mask: (1u32 << (bits.len()/* + 1 */)) - 1,
+        }
+    }
+
+    pub(crate) fn value_mask(&self) -> u32 {
+        self.in_value_mask
+    }
+}
+
 pub(crate) struct DataBlock<'a>(&'a mut [u8]);
 
 impl<'a> From<&'a mut [u8]> for DataBlock<'a> {
@@ -54,46 +82,39 @@ impl<'a> DataBlock<'a> {
         bits.div_ceil(8)
     }
 
-    pub(crate) fn load_bits(&self, bits: Range<usize>) -> u32 {
-        let start_byte = bits.start / 8; // Round down to take the lower byte
-        let end_byte = (bits.end - 1) / 8;
-        let loaded = &self.0[start_byte..=end_byte];
+    pub(crate) fn load_bits(&self, config: &DataBlockFieldConfiguration) -> u32 {
+        let loaded = &self.0[config.bytes.clone()];
         let mut loaded_u32 = 0;
         let len = loaded.len();
         for (i, b) in loaded.iter().enumerate() {
             loaded_u32 += (*b as u32) << ((len - (i + 1)) * 8)
         }
-        let mask = !((u32::MAX << (32 - bits.len())) >> bits.start);
-        loaded_u32 & mask
+        loaded_u32 & config.mask
     }
 
-    pub(crate) fn store_bits(&mut self, bits: Range<usize>, value: u32) {
-        let val_mask = (1u32 << (bits.len() + 1)) - 1;
-        let masked_new_value = value & val_mask;
-        let start_byte = bits.start / 8; // Round down to take the lower byte
-        let end_byte = (bits.end - 1) / 8;
-        let loaded = &self.0[start_byte..=end_byte];
+    pub(crate) fn store_bits(&mut self, config: &DataBlockFieldConfiguration, value: u32) {
+        let masked_new_value = value & config.in_value_mask;
+        let loaded = &self.0[config.bytes.clone()];
         let len = loaded.len();
-        let mask = !((u32::MAX << (32 - len * 8)) >> (bits.start - start_byte * 8));
         let mut loaded_u32 = 0;
         for (i, b) in loaded.iter().enumerate() {
             loaded_u32 += (*b as u32) << ((len - i) * 8)
         }
-        let masked_old_value = loaded_u32 & mask;
+        let masked_old_value = loaded_u32 & config.mask;
         let final_value = masked_old_value | masked_new_value;
-        self.0[start_byte..=end_byte].copy_from_slice(&final_value.to_be_bytes()[(4 - len)..]);
+        self.0[config.bytes.clone()].copy_from_slice(&final_value.to_be_bytes()[(4 - len)..]);
     }
 
-    pub(crate) fn get_fingerprint(&self, configuration: &CuckooConfiguration) -> Fingerprint {
-        self.load_bits(0..configuration.fingerprint_bits).into()
+    pub(crate) fn get_fingerprint(&self, derived: &DerivedConfiguration) -> Fingerprint {
+        self.load_bits(&derived.fingerprint_field_config).into()
     }
 
     pub(crate) fn store_fingerprint(
         &mut self,
         fingerprint: &Fingerprint,
-        configuration: &CuckooConfiguration,
+        derived: &DerivedConfiguration,
     ) {
-        self.store_bits(0..configuration.fingerprint_bits, fingerprint.data);
+        self.store_bits(&derived.fingerprint_field_config, fingerprint.data);
     }
 
     pub(crate) fn reset(&mut self) {
@@ -117,73 +138,40 @@ impl<'a> DataBlock<'a> {
         }
     }
 
-    pub(crate) fn get_lru_counter(&self, configuration: &CuckooConfiguration) -> u8 {
-        self.load_bits(configuration.fingerprint_bits..configuration.fingerprint_bits + 8) as u8
+    pub(crate) fn get_lru_counter(&self, derived: &DerivedConfiguration) -> u8 {
+        self.load_bits(&derived.lru_field_config) as u8
     }
 
-    pub(crate) fn inc_lru_counter(&mut self, configuration: &CuckooConfiguration) {
-        let counter_range = configuration.fingerprint_bits..configuration.fingerprint_bits + 8;
-        let counter = self.load_bits(counter_range.clone()) as u8;
-        self.store_bits(counter_range, (counter + 1) as u32);
+    pub(crate) fn inc_lru_counter(&mut self, derived: &DerivedConfiguration) {
+        let counter = self.load_bits(&derived.lru_field_config) as u8;
+        self.store_bits(&derived.lru_field_config, (counter + 1) as u32);
     }
 
-    pub(crate) fn age_lru_counter(&mut self, configuration: &CuckooConfiguration) {
-        let counter_range = configuration.fingerprint_bits..configuration.fingerprint_bits + 8;
-        let counter = self.load_bits(counter_range.clone()) as u8;
-        self.store_bits(counter_range, (counter >> 1) as u32);
+    pub(crate) fn age_lru_counter(&mut self, derived: &DerivedConfiguration) {
+        let counter = self.load_bits(&derived.lru_field_config) as u8;
+        self.store_bits(&derived.lru_field_config, (counter >> 1) as u32);
     }
 
-    pub(crate) fn get_counter(&self, configuration: &CuckooConfiguration) -> u32 {
-        let mut counter_start = configuration.fingerprint_bits;
-        if configuration.lru_enabled {
-            counter_start += 8;
-        }
-        if configuration.ttl_enabled {
-            counter_start += configuration.ttl_bits;
-        }
-        self.load_bits((counter_start..counter_start + configuration.counter_bits).clone())
+    pub(crate) fn get_counter(&self, derived: &DerivedConfiguration) -> u32 {
+        self.load_bits(&derived.counter_field_config)
     }
 
-    pub(crate) fn inc_counter(&mut self, configuration: &CuckooConfiguration, by: u32) {
-        let mut counter_start = configuration.fingerprint_bits;
-        if configuration.lru_enabled {
-            counter_start += 8;
-        }
-        if configuration.ttl_enabled {
-            counter_start += configuration.ttl_bits;
-        }
-        let counter_range = counter_start..counter_start + configuration.counter_bits;
-        let counter = self.load_bits(counter_range.clone());
-        self.store_bits(counter_range, counter.saturating_add(by));
+    pub(crate) fn inc_counter(&mut self, derived: &DerivedConfiguration, by: u32) {
+        let counter = self.load_bits(&derived.counter_field_config);
+        self.store_bits(&derived.counter_field_config, counter.saturating_add(by));
     }
 
-    pub(crate) fn dec_counter(&mut self, configuration: &CuckooConfiguration, by: u32) {
-        let mut counter_start = configuration.fingerprint_bits;
-        if configuration.lru_enabled {
-            counter_start += 8;
-        }
-        if configuration.ttl_enabled {
-            counter_start += configuration.ttl_bits;
-        }
-        let counter_range = counter_start..counter_start + configuration.counter_bits;
-        let counter = self.load_bits(counter_range.clone());
-        self.store_bits(counter_range, counter.saturating_sub(by));
+    pub(crate) fn dec_counter(&mut self, derived: &DerivedConfiguration, by: u32) {
+        let counter = self.load_bits(&derived.counter_field_config);
+        self.store_bits(&derived.counter_field_config, counter.saturating_sub(by));
     }
 
-    pub(crate) fn get_ttl(&self, configuration: &CuckooConfiguration) -> u32 {
-        let mut ttl_start = configuration.fingerprint_bits;
-        if configuration.lru_enabled {
-            ttl_start += 8;
-        }
-        self.load_bits(ttl_start..ttl_start + configuration.ttl_bits)
+    pub(crate) fn get_ttl(&self, derived: &DerivedConfiguration) -> u32 {
+        self.load_bits(&derived.ttl_field_config)
     }
 
-    pub(crate) fn set_ttl(&mut self, configuration: &CuckooConfiguration, ttl: u32) {
-        let mut ttl_start = configuration.fingerprint_bits;
-        if configuration.lru_enabled {
-            ttl_start += 8;
-        }
-        self.store_bits(ttl_start..ttl_start + configuration.ttl_bits, ttl);
+    pub(crate) fn set_ttl(&mut self, derived: &DerivedConfiguration, ttl: u32) {
+        self.store_bits(&derived.ttl_field_config, ttl);
     }
 }
 
@@ -201,11 +189,12 @@ mod tests {
             lru_enabled: false,
             ttl_enabled: false,
             ttl: 100,
-            ttl_bits: 0,
+            ttl_bits: 8,
             ttl_resolution: 10,
             counter_enabled: false,
             counter_bits: 10,
         };
+        let derived = DerivedConfiguration::derive(&configuration);
         let fingerprint_mask = (1u32 << configuration.fingerprint_bits) - 1;
         let fp = Fingerprint::new(137, fingerprint_mask);
 
@@ -213,17 +202,17 @@ mod tests {
 
         let mut block: DataBlock<'_> = (&mut data[0..4]).into();
 
-        block.store_fingerprint(&fp, &configuration);
+        block.store_fingerprint(&fp, &derived);
 
-        assert_eq!(block.load_bits(0..8), 137);
+        assert_eq!(block.load_bits(&derived.fingerprint_field_config), 137);
 
         block.reset();
 
-        assert_eq!(block.load_bits(0..8), 0);
-        assert_eq!(block.get_fingerprint(&configuration).data, 0);
+        assert_eq!(block.load_bits(&derived.fingerprint_field_config), 0);
+        assert_eq!(block.get_fingerprint(&derived).data, 0);
 
-        block.store_bits(0..8, 137);
+        block.store_bits(&derived.fingerprint_field_config, 137);
 
-        assert_eq!(block.get_fingerprint(&configuration), fp);
+        assert_eq!(block.get_fingerprint(&derived), fp);
     }
 }

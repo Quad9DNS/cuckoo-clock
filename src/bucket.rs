@@ -17,22 +17,7 @@ impl Bucket {
         now: Instant,
     ) -> Self {
         Self {
-            data: vec![
-                0;
-                configuration.bucket_size
-                    * (derived.fingerprint_bytes
-                        + (if configuration.lru_enabled { 1 } else { 0 })
-                        + (if configuration.ttl_enabled {
-                            derived.ttl_bytes
-                        } else {
-                            0
-                        })
-                        + (if configuration.counter_enabled {
-                            derived.counter_bytes
-                        } else {
-                            0
-                        }))
-            ],
+            data: vec![0; configuration.bucket_size * derived.data_block_size],
             ttl_baseline: now,
         }
     }
@@ -41,29 +26,30 @@ impl Bucket {
         &mut self,
         fingerprint: &Fingerprint,
         configuration: &CuckooConfiguration,
+        derived: &DerivedConfiguration,
         now: Instant,
     ) -> bool {
         let baseline = self.ttl_baseline;
         for i in 0..configuration.bucket_size {
-            let mut data = self.get_data_block(i, configuration);
-            let stored = data.get_fingerprint(configuration);
+            let mut data = self.get_data_block(i, derived);
+            let stored = data.get_fingerprint(derived);
 
             let mut current_ttl = None;
             if configuration.ttl_enabled {
-                current_ttl = Some(data.get_ttl(configuration));
+                current_ttl = Some(data.get_ttl(derived));
             }
             let reinsert = stored == *fingerprint;
 
             if !reinsert {
                 if stored.is_empty() {
-                    data.store_fingerprint(fingerprint, configuration);
+                    data.store_fingerprint(fingerprint, derived);
                 } else if current_ttl.is_some_and(|t| {
                     baseline + (Duration::from_secs(t.into()) * configuration.ttl_resolution as u32)
                         <= now
                 }) {
                     // Clear out whatever TTL or other options it had
                     data.reset();
-                    data.store_fingerprint(fingerprint, configuration);
+                    data.store_fingerprint(fingerprint, derived);
                 } else {
                     continue;
                 }
@@ -82,26 +68,25 @@ impl Bucket {
                     ttl_to_store -= diff.as_secs() as u32 / configuration.ttl_resolution as u32;
 
                     for i in 0..configuration.bucket_size {
-                        let item_ttl = self.get_data_block(i, configuration).get_ttl(configuration);
+                        let item_ttl = self.get_data_block(i, derived).get_ttl(derived);
                         let item_ttl = item_ttl.saturating_sub(
                             diff.as_secs() as u32 / configuration.ttl_resolution as u32,
                         );
-                        self.get_data_block(i, configuration)
-                            .set_ttl(configuration, item_ttl);
+                        self.get_data_block(i, derived).set_ttl(derived, item_ttl);
                     }
                 }
             }
 
             // Fetch data again for borrow checker
-            let mut data = self.get_data_block(i, configuration);
+            let mut data = self.get_data_block(i, derived);
             if configuration.ttl_enabled {
-                data.set_ttl(configuration, ttl_to_store);
+                data.set_ttl(derived, ttl_to_store);
             }
             if configuration.counter_enabled {
-                data.inc_counter(configuration, 1);
+                data.inc_counter(derived, 1);
             }
             if reinsert && configuration.lru_enabled {
-                self.increment_lru_counter(i, configuration);
+                self.increment_lru_counter(i, configuration, derived);
             }
             return true;
         }
@@ -112,21 +97,23 @@ impl Bucket {
         &mut self,
         data_block: &mut DataBlock<'_>,
         configuration: &CuckooConfiguration,
+        derived: &DerivedConfiguration,
     ) {
         let index = rand::random_range(0..configuration.bucket_size);
-        self.get_data_block(index, configuration).swap(data_block);
+        self.get_data_block(index, derived).swap(data_block);
     }
 
     pub(crate) fn kick_lru(
         &mut self,
         data_block: &mut DataBlock<'_>,
         configuration: &CuckooConfiguration,
+        derived: &DerivedConfiguration,
     ) -> bool {
         let mut min = u8::MAX;
         let mut pos = configuration.bucket_size;
         for i in 0..configuration.bucket_size {
-            let data = self.get_data_block(i, configuration);
-            let counter = data.get_lru_counter(configuration);
+            let data = self.get_data_block(i, derived);
+            let counter = data.get_lru_counter(derived);
             if counter < min {
                 min = counter;
                 pos = i;
@@ -134,7 +121,7 @@ impl Bucket {
         }
 
         if pos < configuration.bucket_size {
-            self.get_data_block(pos, configuration).swap(data_block);
+            self.get_data_block(pos, derived).swap(data_block);
             true
         } else {
             false
@@ -145,16 +132,17 @@ impl Bucket {
         &mut self,
         fingerprint: &Fingerprint,
         configuration: &CuckooConfiguration,
+        derived: &DerivedConfiguration,
         now: Instant,
     ) -> bool {
         let baseline = self.ttl_baseline;
         for i in 0..configuration.bucket_size {
-            let mut data = self.get_data_block(i, configuration);
-            let stored = data.get_fingerprint(configuration);
+            let mut data = self.get_data_block(i, derived);
+            let stored = data.get_fingerprint(derived);
 
             if stored == *fingerprint {
                 if configuration.ttl_enabled {
-                    let ttl = data.get_ttl(configuration);
+                    let ttl = data.get_ttl(derived);
                     if baseline
                         + Duration::from_secs(ttl as u64) * configuration.ttl_resolution as u32
                         <= now
@@ -165,10 +153,10 @@ impl Bucket {
                     }
                 }
                 if configuration.counter_enabled {
-                    data.inc_counter(configuration, 1);
+                    data.inc_counter(derived, 1);
                 }
                 if configuration.lru_enabled {
-                    self.increment_lru_counter(i, configuration);
+                    self.increment_lru_counter(i, configuration, derived);
                 }
                 return true;
             }
@@ -180,10 +168,11 @@ impl Bucket {
         &mut self,
         fingerprint: &Fingerprint,
         configuration: &CuckooConfiguration,
+        derived: &DerivedConfiguration,
     ) -> bool {
         for i in 0..configuration.bucket_size {
-            let mut data = self.get_data_block(i, configuration);
-            let stored = data.get_fingerprint(configuration);
+            let mut data = self.get_data_block(i, derived);
+            let stored = data.get_fingerprint(derived);
 
             if stored == *fingerprint {
                 data.reset();
@@ -196,25 +185,24 @@ impl Bucket {
     pub(crate) fn get_data_block(
         &mut self,
         index: usize,
-        configuration: &CuckooConfiguration,
+        derived: &DerivedConfiguration,
     ) -> DataBlock<'_> {
-        let size = DataBlock::<'_>::get_size(configuration);
+        let size = derived.data_block_size;
         (&mut self.data[(index * size)..((index + 1) * size)]).into()
     }
 
-    fn increment_lru_counter(&mut self, index: usize, configuration: &CuckooConfiguration) {
-        if self
-            .get_data_block(index, configuration)
-            .get_lru_counter(configuration)
-            == u8::MAX
-        {
+    fn increment_lru_counter(
+        &mut self,
+        index: usize,
+        configuration: &CuckooConfiguration,
+        derived: &DerivedConfiguration,
+    ) {
+        if self.get_data_block(index, derived).get_lru_counter(derived) == u8::MAX {
             // Age all counters when one saturates
             for i in 0..configuration.bucket_size {
-                self.get_data_block(i, configuration)
-                    .age_lru_counter(configuration);
+                self.get_data_block(i, derived).age_lru_counter(derived);
             }
         }
-        self.get_data_block(index, configuration)
-            .inc_lru_counter(configuration);
+        self.get_data_block(index, derived).inc_lru_counter(derived);
     }
 }
