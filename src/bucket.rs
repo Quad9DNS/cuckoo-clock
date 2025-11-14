@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use crate::{
+    associated_data::AssociatedData,
     data_block::{DataBlock, Fingerprint},
     filter::{CuckooConfiguration, DerivedConfiguration},
 };
@@ -162,6 +163,45 @@ impl Bucket {
             }
         }
         false
+    }
+
+    pub(crate) fn get_associated_data(
+        &mut self,
+        fingerprint: &Fingerprint,
+        configuration: &CuckooConfiguration,
+        derived: &DerivedConfiguration,
+        now: Instant,
+    ) -> Option<AssociatedData> {
+        let baseline = self.ttl_baseline;
+        for i in 0..configuration.bucket_size {
+            let mut data = self.get_data_block(i, derived);
+            let stored = data.get_fingerprint(derived);
+
+            if stored == *fingerprint {
+                if configuration.ttl_enabled {
+                    let ttl = data.get_ttl(derived);
+                    if baseline
+                        + Duration::from_secs(ttl as u64) * configuration.ttl_resolution as u32
+                        <= now
+                    {
+                        // Expired item
+                        data.reset();
+                        return None;
+                    }
+                }
+                if configuration.counter_enabled {
+                    data.inc_counter(derived, 1);
+                }
+                if configuration.lru_enabled {
+                    self.increment_lru_counter(i, configuration, derived);
+                }
+                return Some(AssociatedData::new(
+                    self.get_data_block(i, derived),
+                    derived.clone(),
+                ));
+            }
+        }
+        None
     }
 
     pub(crate) fn remove(

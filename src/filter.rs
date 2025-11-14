@@ -6,8 +6,9 @@ use std::{
 };
 
 use crate::{
+    associated_data::AssociatedData,
     bucket::Bucket,
-    data_block::{DataBlock, DataBlockFieldConfiguration, Fingerprint},
+    data_block::{DataBlock, DataBlockFieldConfiguration, Fingerprint, ReadOnlyDataBlock},
 };
 
 #[derive(Clone)]
@@ -189,6 +190,26 @@ impl<H: BuildHasher> CuckooFilter<H> {
                 .lock()
                 .expect("mutex poisoned")
                 .contains(&fp, &self.configuration, &self.derived, now);
+        }
+
+        contains
+    }
+
+    pub fn get_associated_data<K: Hash + ?Sized>(&self, key: &K) -> Option<AssociatedData> {
+        let (fp, i1) = self.get_fingerprint_and_index(key);
+        let now = Instant::now();
+
+        let mut contains = self.buckets[i1 as usize]
+            .lock()
+            .expect("mutex poisoned")
+            .get_associated_data(&fp, &self.configuration, &self.derived, now);
+
+        if contains.is_none() {
+            let i2 = self.alt_index(&fp, i1);
+            contains = self.buckets[i2 as usize]
+                .lock()
+                .expect("mutex poisoned")
+                .get_associated_data(&fp, &self.configuration, &self.derived, now);
         }
 
         contains

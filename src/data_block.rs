@@ -23,6 +23,10 @@ impl Fingerprint {
     pub(crate) fn is_empty(&self) -> bool {
         self.data == 0
     }
+
+    pub(crate) fn data(&self) -> u32 {
+        self.data
+    }
 }
 
 impl From<u32> for Fingerprint {
@@ -59,6 +63,7 @@ impl DataBlockFieldConfiguration {
     }
 }
 
+pub(crate) struct ReadOnlyDataBlock<'a>(&'a [u8]);
 pub(crate) struct DataBlock<'a>(&'a mut [u8]);
 
 impl<'a> From<&'a mut [u8]> for DataBlock<'a> {
@@ -67,6 +72,13 @@ impl<'a> From<&'a mut [u8]> for DataBlock<'a> {
     }
 }
 
+impl<'a> From<&'a [u8]> for ReadOnlyDataBlock<'a> {
+    fn from(value: &'a [u8]) -> Self {
+        Self(value)
+    }
+}
+
+// TODO: traits
 impl<'a> DataBlock<'a> {
     pub(crate) fn get_size(configuration: &CuckooConfiguration) -> usize {
         let mut bits = configuration.fingerprint_bits;
@@ -80,6 +92,10 @@ impl<'a> DataBlock<'a> {
             bits += configuration.counter_bits;
         }
         bits.div_ceil(8)
+    }
+
+    pub(crate) fn inner(self) -> &'a mut [u8] {
+        self.0
     }
 
     pub(crate) fn load_bits(&self, config: &DataBlockFieldConfiguration) -> u32 {
@@ -160,6 +176,38 @@ impl<'a> DataBlock<'a> {
 
     pub(crate) fn set_ttl(&mut self, derived: &DerivedConfiguration, ttl: u32) {
         self.store_bits(&derived.ttl_field_config, ttl);
+    }
+}
+
+impl<'a> ReadOnlyDataBlock<'a> {
+    pub(crate) fn load_bits(&self, config: &DataBlockFieldConfiguration) -> u32 {
+        let loaded = &self.0[config.bytes.clone()];
+        let mut loaded_u32 = 0;
+        let len = loaded.len();
+        for (i, b) in loaded.iter().enumerate() {
+            loaded_u32 += (*b as u32) << ((len - (i + 1)) * 8)
+        }
+        loaded_u32 & config.mask
+    }
+
+    pub(crate) fn inner(self) -> &'a [u8] {
+        self.0
+    }
+
+    pub(crate) fn get_fingerprint(&self, derived: &DerivedConfiguration) -> Fingerprint {
+        self.load_bits(&derived.fingerprint_field_config).into()
+    }
+
+    pub(crate) fn get_lru_counter(&self, derived: &DerivedConfiguration) -> u8 {
+        self.load_bits(&derived.lru_field_config) as u8
+    }
+
+    pub(crate) fn get_counter(&self, derived: &DerivedConfiguration) -> u32 {
+        self.load_bits(&derived.counter_field_config)
+    }
+
+    pub(crate) fn get_ttl(&self, derived: &DerivedConfiguration) -> u32 {
+        self.load_bits(&derived.ttl_field_config)
     }
 }
 
