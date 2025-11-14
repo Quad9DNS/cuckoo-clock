@@ -123,19 +123,7 @@ impl<'a> DataBlock<'a> {
     }
 
     pub(crate) fn swap(&mut self, other: &mut DataBlock<'_>) {
-        assert_eq!(
-            self.0.len(),
-            other.0.len(),
-            "Two Cuckoo data blocks should have equal sizes"
-        );
-        assert_ne!(
-            self.0.as_ptr(),
-            other.0.as_ptr(),
-            "Tried to swap the same 2 data blocks"
-        );
-        unsafe {
-            std::ptr::swap_nonoverlapping(self.0.as_mut_ptr(), other.0.as_mut_ptr(), self.0.len());
-        }
+        self.0.swap_with_slice(other.0);
     }
 
     pub(crate) fn get_lru_counter(&self, derived: &DerivedConfiguration) -> u8 {
