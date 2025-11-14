@@ -1,7 +1,6 @@
 use std::{
-    hash::{Hash, Hasher},
+    hash::{BuildHasher, Hash, RandomState},
     iter::repeat_with,
-    marker::PhantomData,
     sync::{Arc, Mutex},
     time::Instant,
 };
@@ -12,11 +11,11 @@ use crate::{
 };
 
 #[derive(Clone)]
-pub struct CuckooFilter<H> {
+pub struct CuckooFilter<H: BuildHasher> {
     configuration: CuckooConfiguration,
     derived: DerivedConfiguration,
     buckets: Arc<Vec<Mutex<Bucket>>>,
-    _hasher: PhantomData<H>,
+    build_hasher: H,
 }
 
 #[derive(Clone, Debug)]
@@ -86,11 +85,14 @@ impl DerivedConfiguration {
     }
 }
 
-impl<H> CuckooFilter<H>
-where
-    H: Hasher + Default,
-{
-    pub fn new(configuration: CuckooConfiguration) -> Self {
+impl CuckooFilter<RandomState> {
+    pub fn new_random(configuration: CuckooConfiguration) -> Self {
+        Self::new(configuration, RandomState::new())
+    }
+}
+
+impl<H: BuildHasher> CuckooFilter<H> {
+    pub fn new(configuration: CuckooConfiguration, build_hasher: H) -> Self {
         let derived = DerivedConfiguration::derive(&configuration);
         let now = Instant::now();
         Self {
@@ -101,7 +103,7 @@ where
             )
             .into(),
             derived,
-            _hasher: PhantomData,
+            build_hasher,
         }
     }
 
@@ -212,9 +214,7 @@ where
     }
 
     fn get_fingerprint_and_index<K: Hash + ?Sized>(&self, key: &K) -> (Fingerprint, u32) {
-        let mut hasher = <H as Default>::default();
-        key.hash(&mut hasher);
-        let result = hasher.finish();
+        let result = self.build_hasher.hash_one(key);
 
         // Fingeprint bits over 32 are definitely an overkill
         // We can reduce number of hashes by using one hash as fingerprint and first index
@@ -231,9 +231,7 @@ where
     }
 
     fn alt_index(&self, fingerprint: &Fingerprint, index: u32) -> u32 {
-        let mut hasher = <H as Default>::default();
-        fingerprint.hash(&mut hasher);
-        let result = hasher.finish();
+        let result = self.build_hasher.hash_one(fingerprint);
 
         (index ^ ((result as u32) & self.derived.buckets_mask)) & self.derived.buckets_mask
     }
@@ -263,7 +261,7 @@ mod tests {
 
     #[test]
     fn basic_insertion() {
-        let filter = CuckooFilter::<DefaultHasher>::new(default_configuration());
+        let filter = CuckooFilter::new_random(default_configuration());
 
         filter.insert("basic");
 
@@ -272,7 +270,7 @@ mod tests {
 
     #[test]
     fn basic_removal() {
-        let filter = CuckooFilter::<DefaultHasher>::new(default_configuration());
+        let filter = CuckooFilter::new_random(default_configuration());
 
         filter.insert("basic");
 
@@ -286,7 +284,7 @@ mod tests {
     // TODO: Replace with fake hasher and hashes for more control
     #[test]
     fn lru_insertion() {
-        let filter = CuckooFilter::<DefaultHasher>::new(CuckooConfiguration {
+        let filter = CuckooFilter::new_random(CuckooConfiguration {
             lru_enabled: true,
             ..default_configuration()
         });

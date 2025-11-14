@@ -1,4 +1,4 @@
-use std::hash::{DefaultHasher, Hasher};
+use std::hash::BuildHasher;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use cuckoo_clock::filter::{CuckooConfiguration, CuckooFilter};
@@ -19,7 +19,7 @@ fn default_configuration() -> CuckooConfiguration {
     }
 }
 
-fn run_benchmark<H: Hasher + Default>(
+fn run_benchmark<H: BuildHasher>(
     c: &mut Criterion,
     filter: &CuckooFilter<H>,
     items: &[String],
@@ -48,8 +48,8 @@ fn run_benchmark<H: Hasher + Default>(
 }
 
 fn bench_large(c: &mut Criterion) {
-    let filter = CuckooFilter::<DefaultHasher>::new(default_configuration());
-    let empty_filter = CuckooFilter::<DefaultHasher>::new(default_configuration());
+    let filter = CuckooFilter::new_random(default_configuration());
+    let empty_filter = CuckooFilter::new_random(default_configuration());
 
     // Prepopulate
     (0..filter.get_bucket_count()).for_each(|i| {
@@ -67,12 +67,12 @@ fn bench_large(c: &mut Criterion) {
 }
 
 fn bench_large_fingeprint(c: &mut Criterion) {
-    let filter = CuckooFilter::<DefaultHasher>::new(CuckooConfiguration {
+    let filter = CuckooFilter::new_random(CuckooConfiguration {
         fingerprint_bits: 32,
         max_entries: 1_000_000,
         ..default_configuration()
     });
-    let empty_filter = CuckooFilter::<DefaultHasher>::new(CuckooConfiguration {
+    let empty_filter = CuckooFilter::new_random(CuckooConfiguration {
         fingerprint_bits: 32,
         max_entries: 1_000_000,
         ..default_configuration()
@@ -94,13 +94,13 @@ fn bench_large_fingeprint(c: &mut Criterion) {
 }
 
 fn bench_large_buckets(c: &mut Criterion) {
-    let filter = CuckooFilter::<DefaultHasher>::new(CuckooConfiguration {
+    let filter = CuckooFilter::new_random(CuckooConfiguration {
         fingerprint_bits: 32,
         bucket_size: 100,
         max_entries: 1_000_000,
         ..default_configuration()
     });
-    let empty_filter = CuckooFilter::<DefaultHasher>::new(CuckooConfiguration {
+    let empty_filter = CuckooFilter::new_random(CuckooConfiguration {
         fingerprint_bits: 32,
         bucket_size: 100,
         max_entries: 1_000_000,
