@@ -80,16 +80,17 @@ impl<'a> From<&'a [u8]> for ReadOnlyDataBlock<'a> {
 
 // TODO: traits
 impl<'a> DataBlock<'a> {
+    // Sum of bits will never reach the size of `usize`, so no need to do checked adds
     pub(crate) fn get_size(configuration: &CuckooConfiguration) -> usize {
-        let mut bits = configuration.fingerprint_bits;
+        let mut bits = *configuration.fingerprint_bits;
         if configuration.lru_enabled {
             bits += 8;
         }
         if configuration.ttl_enabled {
-            bits += configuration.ttl_bits;
+            bits += *configuration.ttl_bits;
         }
         if configuration.counter_enabled {
-            bits += configuration.counter_bits;
+            bits += *configuration.counter_bits;
         }
         bits.div_ceil(8)
     }
@@ -142,15 +143,18 @@ impl<'a> DataBlock<'a> {
         self.0.swap_with_slice(other.0);
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     pub(crate) fn get_lru_counter(&self, derived: &DerivedConfiguration) -> u8 {
         self.load_bits(&derived.lru_field_config) as u8
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     pub(crate) fn inc_lru_counter(&mut self, derived: &DerivedConfiguration) {
         let counter = self.load_bits(&derived.lru_field_config) as u8;
         self.store_bits(&derived.lru_field_config, (counter + 1) as u32);
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     pub(crate) fn age_lru_counter(&mut self, derived: &DerivedConfiguration) {
         let counter = self.load_bits(&derived.lru_field_config) as u8;
         self.store_bits(&derived.lru_field_config, (counter >> 1) as u32);
@@ -198,6 +202,7 @@ impl<'a> ReadOnlyDataBlock<'a> {
         self.load_bits(&derived.fingerprint_field_config).into()
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     pub(crate) fn get_lru_counter(&self, derived: &DerivedConfiguration) -> u8 {
         self.load_bits(&derived.lru_field_config) as u8
     }
@@ -212,26 +217,27 @@ impl<'a> ReadOnlyDataBlock<'a> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
     #[test]
     fn compare_fingerprint_to_bits() {
         let configuration = CuckooConfiguration {
-            fingerprint_bits: 8,
+            fingerprint_bits: 8.try_into().unwrap(),
             bucket_size: 4,
             max_entries: 1000,
             max_kicks: 500,
             lru_enabled: false,
             ttl_enabled: false,
             ttl: 100,
-            ttl_bits: 8,
+            ttl_bits: 8.try_into().unwrap(),
             ttl_resolution: 10,
             counter_enabled: false,
-            counter_bits: 10,
+            counter_bits: 10.try_into().unwrap(),
         };
         let derived = DerivedConfiguration::derive(&configuration);
-        let fingerprint_mask = (1u32 << configuration.fingerprint_bits) - 1;
+        let fingerprint_mask = (1u32 << *configuration.fingerprint_bits) - 1;
         let fp = Fingerprint::new(137, fingerprint_mask);
 
         let mut data = [0u8; 4];

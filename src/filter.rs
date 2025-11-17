@@ -1,6 +1,7 @@
 use std::{
     hash::{BuildHasher, Hash, RandomState},
     iter::repeat_with,
+    ops::{Add, Deref, DerefMut},
     sync::{Arc, Mutex},
     time::Instant,
 };
@@ -8,7 +9,7 @@ use std::{
 use crate::{
     associated_data::AssociatedData,
     bucket::Bucket,
-    data_block::{DataBlock, DataBlockFieldConfiguration, Fingerprint, ReadOnlyDataBlock},
+    data_block::{DataBlock, DataBlockFieldConfiguration, Fingerprint},
 };
 
 #[derive(Clone)]
@@ -21,21 +22,94 @@ pub struct CuckooFilter<H: BuildHasher> {
 
 #[derive(Clone, Debug)]
 pub struct CuckooConfiguration {
-    // Max 32
-    pub fingerprint_bits: usize,
+    pub fingerprint_bits: BitCount,
     pub bucket_size: usize,
     pub max_entries: usize,
     pub max_kicks: usize,
     // LRU
     pub lru_enabled: bool,
+    // TODO: wrapper type for TTL
     // TTL
     pub ttl_enabled: bool,
     pub ttl: u32,
-    pub ttl_bits: usize,
-    pub ttl_resolution: usize,
+    pub ttl_bits: BitCount,
+    pub ttl_resolution: u32,
+    // TODO: wrapper type for Counter
     // Counter
     pub counter_enabled: bool,
-    pub counter_bits: usize,
+    pub counter_bits: BitCount,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct BitCount(usize);
+
+impl Deref for BitCount {
+    type Target = usize;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for BitCount {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl TryFrom<usize> for BitCount {
+    type Error = crate::Error;
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        if value > 32 {
+            return Err(crate::error::Error::BitCountTooHigh);
+        }
+        Ok(Self(value))
+    }
+}
+
+impl From<BitCount> for usize {
+    fn from(value: BitCount) -> Self {
+        value.0
+    }
+}
+
+// Since bit count can't be higher than 32
+// Conversion into any integer is fine
+impl From<BitCount> for u64 {
+    fn from(value: BitCount) -> Self {
+        value.0 as u64
+    }
+}
+
+impl From<BitCount> for u32 {
+    #[allow(clippy::cast_possible_truncation)]
+    fn from(value: BitCount) -> Self {
+        value.0 as u32
+    }
+}
+
+impl From<BitCount> for u16 {
+    #[allow(clippy::cast_possible_truncation)]
+    fn from(value: BitCount) -> Self {
+        value.0 as u16
+    }
+}
+
+impl Add<usize> for BitCount {
+    type Output = usize;
+
+    fn add(self, rhs: usize) -> Self::Output {
+        self.0 + rhs
+    }
+}
+
+impl Add<BitCount> for usize {
+    type Output = usize;
+
+    fn add(self, rhs: BitCount) -> Self::Output {
+        self + rhs.0
+    }
 }
 
 #[derive(Clone)]
@@ -54,58 +128,56 @@ impl DerivedConfiguration {
         let required_bucket_count = configuration
             .max_entries
             .div_ceil(configuration.bucket_size);
-        let mut bucket_count = 1;
-        while bucket_count < required_bucket_count {
-            bucket_count = (bucket_count + 1).next_power_of_two();
-        }
+        let bucket_count = required_bucket_count.next_power_of_two();
         let ttl_start =
-            configuration.fingerprint_bits + if configuration.lru_enabled { 8 } else { 0 };
+            *configuration.fingerprint_bits + if configuration.lru_enabled { 8 } else { 0 };
         let counter_start = ttl_start
             + if configuration.ttl_enabled {
-                configuration.ttl_bits
+                *configuration.ttl_bits
             } else {
                 0
             };
         Self {
             fingerprint_field_config: DataBlockFieldConfiguration::new(
-                0..configuration.fingerprint_bits,
+                0..*configuration.fingerprint_bits,
             ),
             lru_field_config: DataBlockFieldConfiguration::new(
-                configuration.fingerprint_bits..configuration.fingerprint_bits + 8,
+                *configuration.fingerprint_bits..(*configuration.fingerprint_bits + 8),
             ),
             ttl_field_config: DataBlockFieldConfiguration::new(
-                ttl_start..ttl_start + configuration.ttl_bits,
+                ttl_start..ttl_start + *configuration.ttl_bits,
             ),
             counter_field_config: DataBlockFieldConfiguration::new(
-                counter_start..counter_start + configuration.ttl_bits,
+                counter_start..counter_start + *configuration.ttl_bits,
             ),
             data_block_size: DataBlock::get_size(configuration),
             bucket_count,
+            #[allow(clippy::cast_possible_truncation)]
             buckets_mask: (bucket_count - 1) as u32,
         }
     }
 }
 
 impl CuckooFilter<RandomState> {
-    pub fn new_random(configuration: CuckooConfiguration) -> Self {
+    pub fn new_random(configuration: CuckooConfiguration) -> crate::Result<Self> {
         Self::new(configuration, RandomState::new())
     }
 }
 
+#[allow(clippy::expect_used)]
 impl<H: BuildHasher> CuckooFilter<H> {
-    pub fn new(configuration: CuckooConfiguration, build_hasher: H) -> Self {
+    pub fn new(configuration: CuckooConfiguration, build_hasher: H) -> crate::Result<Self> {
         let derived = DerivedConfiguration::derive(&configuration);
         let now = Instant::now();
-        Self {
+        Ok(Self {
             configuration: configuration.clone(),
-            buckets: Vec::from_iter(
-                repeat_with(|| Bucket::new(&configuration, &derived, now).into())
-                    .take(derived.bucket_count),
-            )
-            .into(),
+            buckets: repeat_with(|| Bucket::new(&configuration, &derived, now).map(Mutex::new))
+                .take(derived.bucket_count)
+                .collect::<crate::Result<Vec<_>>>()?
+                .into(),
             derived,
             build_hasher,
-        }
+        })
     }
 
     pub fn get_bucket_count(&self) -> usize {
@@ -240,6 +312,8 @@ impl<H: BuildHasher> CuckooFilter<H> {
         // Fingeprint bits over 32 are definitely an overkill
         // We can reduce number of hashes by using one hash as fingerprint and first index
         let fingerprint = (result >> 32) as u32;
+        // Intentional truncation here
+        #[allow(clippy::cast_possible_truncation)]
         let index = result as u32 & self.derived.buckets_mask;
 
         (
@@ -251,6 +325,8 @@ impl<H: BuildHasher> CuckooFilter<H> {
         )
     }
 
+    // Intentional truncation here
+    #[allow(clippy::cast_possible_truncation)]
     fn alt_index(&self, fingerprint: &Fingerprint, index: u32) -> u32 {
         let result = self.build_hasher.hash_one(fingerprint);
 
@@ -259,30 +335,29 @@ impl<H: BuildHasher> CuckooFilter<H> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
-    use std::hash::DefaultHasher;
-
     use super::*;
 
     fn default_configuration() -> CuckooConfiguration {
         CuckooConfiguration {
-            fingerprint_bits: 8,
+            fingerprint_bits: BitCount(8),
             bucket_size: 4,
             max_entries: 1000,
             max_kicks: 500,
             lru_enabled: false,
             ttl_enabled: false,
             ttl: 0,
-            ttl_bits: 0,
+            ttl_bits: BitCount(0),
             ttl_resolution: 0,
             counter_enabled: false,
-            counter_bits: 0,
+            counter_bits: BitCount(0),
         }
     }
 
     #[test]
     fn basic_insertion() {
-        let filter = CuckooFilter::new_random(default_configuration());
+        let filter = CuckooFilter::new_random(default_configuration()).unwrap();
 
         filter.insert("basic");
 
@@ -291,7 +366,7 @@ mod tests {
 
     #[test]
     fn basic_removal() {
-        let filter = CuckooFilter::new_random(default_configuration());
+        let filter = CuckooFilter::new_random(default_configuration()).unwrap();
 
         filter.insert("basic");
 
@@ -308,7 +383,8 @@ mod tests {
         let filter = CuckooFilter::new_random(CuckooConfiguration {
             lru_enabled: true,
             ..default_configuration()
-        });
+        })
+        .unwrap();
 
         filter.insert("test");
         filter.contains("test"); // Make it more used than others

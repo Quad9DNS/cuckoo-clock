@@ -16,11 +16,17 @@ impl Bucket {
         configuration: &CuckooConfiguration,
         derived: &DerivedConfiguration,
         now: Instant,
-    ) -> Self {
-        Self {
-            data: vec![0; configuration.bucket_size * derived.data_block_size],
+    ) -> crate::Result<Self> {
+        Ok(Self {
+            data: vec![
+                0;
+                configuration
+                    .bucket_size
+                    .checked_mul(derived.data_block_size)
+                    .ok_or(crate::Error::BucketTooBig)?
+            ],
             ttl_baseline: now,
-        }
+        })
     }
 
     pub(crate) fn insert(
@@ -45,8 +51,7 @@ impl Bucket {
                 if stored.is_empty() {
                     data.store_fingerprint(fingerprint, derived);
                 } else if current_ttl.is_some_and(|t| {
-                    baseline + (Duration::from_secs(t.into()) * configuration.ttl_resolution as u32)
-                        <= now
+                    baseline + (Duration::from_secs(t.into()) * configuration.ttl_resolution) <= now
                 }) {
                     // Clear out whatever TTL or other options it had
                     data.reset();
@@ -59,19 +64,25 @@ impl Bucket {
             let mut ttl_to_store = 0;
 
             if configuration.ttl_enabled {
-                ttl_to_store = (now - baseline).as_secs() as u32
-                    / (configuration.ttl_resolution as u32)
-                    + configuration.ttl;
+                let ttl_from_baseline = (now - baseline)
+                    .as_secs()
+                    .try_into()
+                    .map(|d: u32| d / configuration.ttl_resolution + configuration.ttl);
                 // TTL is too big to store, move up the baseline and readjust
-                if ttl_to_store as u64 > 2u64.pow(configuration.ttl_bits as u32) {
+                // diff / resolution won't be > 32 bits inside this block
+                #[allow(clippy::cast_possible_truncation)]
+                if ttl_from_baseline.is_err()
+                    || ttl_from_baseline
+                        .is_ok_and(|ttl| ttl as u64 > 2u64.pow(configuration.ttl_bits.into()))
+                {
                     let diff = now - baseline;
                     self.ttl_baseline += diff;
-                    ttl_to_store -= diff.as_secs() as u32 / configuration.ttl_resolution as u32;
+                    ttl_to_store -= (diff.as_secs() / configuration.ttl_resolution as u64) as u32;
 
                     for i in 0..configuration.bucket_size {
                         let item_ttl = self.get_data_block(i, derived).get_ttl(derived);
                         let item_ttl = item_ttl.saturating_sub(
-                            diff.as_secs() as u32 / configuration.ttl_resolution as u32,
+                            (diff.as_secs() / configuration.ttl_resolution as u64) as u32,
                         );
                         self.get_data_block(i, derived).set_ttl(derived, item_ttl);
                     }
@@ -144,8 +155,7 @@ impl Bucket {
             if stored == *fingerprint {
                 if configuration.ttl_enabled {
                     let ttl = data.get_ttl(derived);
-                    if baseline
-                        + Duration::from_secs(ttl as u64) * configuration.ttl_resolution as u32
+                    if baseline + Duration::from_secs(ttl as u64) * configuration.ttl_resolution
                         <= now
                     {
                         // Expired item
@@ -180,8 +190,7 @@ impl Bucket {
             if stored == *fingerprint {
                 if configuration.ttl_enabled {
                     let ttl = data.get_ttl(derived);
-                    if baseline
-                        + Duration::from_secs(ttl as u64) * configuration.ttl_resolution as u32
+                    if baseline + Duration::from_secs(ttl as u64) * configuration.ttl_resolution
                         <= now
                     {
                         // Expired item
@@ -195,9 +204,12 @@ impl Bucket {
                 if configuration.lru_enabled {
                     self.increment_lru_counter(i, configuration, derived);
                 }
+                let baseline = self.ttl_baseline;
                 return Some(AssociatedData::new(
                     self.get_data_block(i, derived),
+                    configuration.clone(),
                     derived.clone(),
+                    baseline,
                 ));
             }
         }
