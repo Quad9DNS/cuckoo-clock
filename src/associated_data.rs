@@ -1,14 +1,13 @@
 use std::time::{Duration, Instant};
 
 use crate::{
+    config::CuckooConfiguration,
     data_block::{DataBlock, ReadOnlyDataBlock},
-    filter::{CuckooConfiguration, DerivedConfiguration},
 };
 
 pub struct AssociatedData {
     data: Box<[u8]>,
     configuration: CuckooConfiguration,
-    derived: DerivedConfiguration,
     ttl_baseline: Instant,
 }
 
@@ -16,13 +15,11 @@ impl AssociatedData {
     pub(crate) fn new(
         data: DataBlock<'_>,
         configuration: CuckooConfiguration,
-        derived: DerivedConfiguration,
         ttl_baseline: Instant,
     ) -> Self {
         Self {
             data: data.inner().into(),
             configuration,
-            derived,
             ttl_baseline,
         }
     }
@@ -30,30 +27,55 @@ impl AssociatedData {
     #[must_use]
     pub fn get_fingerprint(&self) -> u32 {
         ReadOnlyDataBlock::from(&self.data[..])
-            .get_fingerprint(&self.derived)
+            .get_fingerprint(&self.configuration)
             .data()
     }
 
-    #[must_use]
-    pub fn get_lru_counter(&self) -> u8 {
-        ReadOnlyDataBlock::from(&self.data[..]).get_lru_counter(&self.derived)
+    pub fn get_lru_counter(&self) -> crate::Result<u8> {
+        Ok(ReadOnlyDataBlock::from(&self.data[..]).get_lru_counter(
+            self.configuration
+                .lru_field_config
+                .as_ref()
+                .ok_or(crate::Error::FeatureNotEnabled("LRU".to_string()))?,
+        ))
     }
 
-    #[must_use]
-    pub fn get_counter(&self) -> u32 {
-        ReadOnlyDataBlock::from(&self.data[..]).get_counter(&self.derived)
+    pub fn get_counter(&self) -> crate::Result<u32> {
+        Ok(ReadOnlyDataBlock::from(&self.data[..]).get_counter(
+            self.configuration
+                .counter_field_config
+                .as_ref()
+                .ok_or(crate::Error::FeatureNotEnabled("Counter".to_string()))?,
+        ))
     }
 
-    #[must_use]
-    pub fn get_ttl(&self) -> u64 {
+    pub fn get_stored_ttl_value(&self) -> crate::Result<u32> {
+        Ok(ReadOnlyDataBlock::from(&self.data[..]).get_ttl(
+            self.configuration
+                .ttl_field_config
+                .as_ref()
+                .ok_or(crate::Error::FeatureNotEnabled("TTL".to_string()))?,
+        ))
+    }
+
+    pub fn get_ttl(&self) -> crate::Result<u64> {
         self.get_ttl_at(Instant::now())
     }
 
-    #[must_use]
-    pub fn get_ttl_at(&self, at: Instant) -> u64 {
-        let ttl = ReadOnlyDataBlock::from(&self.data[..]).get_ttl(&self.derived);
-        let expiry =
-            self.ttl_baseline + Duration::from_secs(ttl as u64) * self.configuration.ttl_resolution;
-        (expiry - at).as_secs()
+    pub fn get_expiry(&self) -> crate::Result<Instant> {
+        let ttl_config = self
+            .configuration
+            .ttl_field_config
+            .as_ref()
+            .ok_or(crate::Error::FeatureNotEnabled("TTL".to_string()))?;
+        let ttl = self.get_stored_ttl_value()?;
+        let expiry = self.ttl_baseline
+            + Duration::from_secs(ttl as u64) * ttl_config.0.ttl_resolution.into();
+        Ok(expiry)
+    }
+
+    pub fn get_ttl_at(&self, at: Instant) -> crate::Result<u64> {
+        let expiry = self.get_expiry()?;
+        Ok((expiry - at).as_secs())
     }
 }

@@ -1,22 +1,10 @@
 use std::hash::BuildHasher;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use cuckoo_clock::filter::{CuckooConfiguration, CuckooFilter};
+use cuckoo_clock::{config::CuckooConfiguration, filter::CuckooFilter};
 
 fn default_configuration() -> CuckooConfiguration {
-    CuckooConfiguration {
-        fingerprint_bits: 8,
-        bucket_size: 4,
-        max_entries: 100_000,
-        max_kicks: 500,
-        lru_enabled: false,
-        ttl_enabled: false,
-        ttl_bits: 32,
-        ttl_resolution: 1,
-        ttl: 100,
-        counter_enabled: false,
-        counter_bits: 8,
-    }
+    CuckooConfiguration::builder(100_000).build().unwrap()
 }
 
 fn run_benchmark<H: BuildHasher>(
@@ -67,16 +55,12 @@ fn bench_large(c: &mut Criterion) {
 }
 
 fn bench_large_fingeprint(c: &mut Criterion) {
-    let filter = CuckooFilter::new_random(CuckooConfiguration {
-        fingerprint_bits: 32,
-        max_entries: 1_000_000,
-        ..default_configuration()
-    });
-    let empty_filter = CuckooFilter::new_random(CuckooConfiguration {
-        fingerprint_bits: 32,
-        max_entries: 1_000_000,
-        ..default_configuration()
-    });
+    let config = CuckooConfiguration::builder(1_000_000)
+        .fingerprint_bits(32.try_into().unwrap())
+        .build()
+        .unwrap();
+    let filter = CuckooFilter::new_random(config.clone());
+    let empty_filter = CuckooFilter::new_random(config);
 
     // Prepopulate
     (0..filter.get_bucket_count()).for_each(|i| {
@@ -94,18 +78,13 @@ fn bench_large_fingeprint(c: &mut Criterion) {
 }
 
 fn bench_large_buckets(c: &mut Criterion) {
-    let filter = CuckooFilter::new_random(CuckooConfiguration {
-        fingerprint_bits: 32,
-        bucket_size: 100,
-        max_entries: 1_000_000,
-        ..default_configuration()
-    });
-    let empty_filter = CuckooFilter::new_random(CuckooConfiguration {
-        fingerprint_bits: 32,
-        bucket_size: 100,
-        max_entries: 1_000_000,
-        ..default_configuration()
-    });
+    let config = CuckooConfiguration::builder(1_000_000)
+        .fingerprint_bits(32.try_into().unwrap())
+        .bucket_size(100)
+        .build()
+        .unwrap();
+    let filter = CuckooFilter::new_random(config.clone());
+    let empty_filter = CuckooFilter::new_random(config);
 
     // Prepopulate
     (0..filter.get_bucket_count()).for_each(|i| {

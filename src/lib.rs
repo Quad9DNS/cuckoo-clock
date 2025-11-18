@@ -21,6 +21,7 @@
 
 pub mod associated_data;
 mod bucket;
+pub mod config;
 mod data_block;
 pub mod error;
 pub mod filter;
