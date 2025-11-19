@@ -1,9 +1,9 @@
-use std::time::{Duration, Instant};
-
-use crate::{
-    config::CuckooConfiguration,
-    data_block::{DataBlock, ReadOnlyDataBlock},
+use std::{
+    borrow::Borrow,
+    time::{Duration, Instant},
 };
+
+use crate::{config::CuckooConfiguration, data_block::DataBlock};
 
 pub struct AssociatedData {
     data: Box<[u8]>,
@@ -12,8 +12,8 @@ pub struct AssociatedData {
 }
 
 impl AssociatedData {
-    pub(crate) fn new(
-        data: DataBlock<'_>,
+    pub(crate) fn new<T: Borrow<[u8]>>(
+        data: DataBlock<T>,
         configuration: CuckooConfiguration,
         ttl_baseline: Instant,
     ) -> Self {
@@ -26,13 +26,13 @@ impl AssociatedData {
 
     #[must_use]
     pub fn get_fingerprint(&self) -> u32 {
-        ReadOnlyDataBlock::from(&self.data[..])
+        DataBlock::from(&self.data[..])
             .get_fingerprint(&self.configuration)
             .data()
     }
 
     pub fn get_lru_counter(&self) -> crate::Result<u8> {
-        Ok(ReadOnlyDataBlock::from(&self.data[..]).get_lru_counter(
+        Ok(DataBlock::from(&self.data[..]).get_lru_counter(
             self.configuration
                 .lru_field_config
                 .as_ref()
@@ -41,7 +41,7 @@ impl AssociatedData {
     }
 
     pub fn get_counter(&self) -> crate::Result<u32> {
-        Ok(ReadOnlyDataBlock::from(&self.data[..]).get_counter(
+        Ok(DataBlock::from(&self.data[..]).get_counter(
             self.configuration
                 .counter_field_config
                 .as_ref()
@@ -50,7 +50,7 @@ impl AssociatedData {
     }
 
     pub fn get_stored_ttl_value(&self) -> crate::Result<u32> {
-        Ok(ReadOnlyDataBlock::from(&self.data[..]).get_ttl(
+        Ok(DataBlock::from(&self.data[..]).get_ttl(
             self.configuration
                 .ttl_field_config
                 .as_ref()

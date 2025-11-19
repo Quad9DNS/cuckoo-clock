@@ -1,4 +1,7 @@
-use std::time::{Duration, Instant};
+use std::{
+    borrow::BorrowMut,
+    time::{Duration, Instant},
+};
 
 use crate::{
     associated_data::AssociatedData,
@@ -93,18 +96,18 @@ impl Bucket {
         false
     }
 
-    pub(crate) fn kick_random(
+    pub(crate) fn kick_random<T: BorrowMut<[u8]>>(
         &mut self,
-        data_block: &mut DataBlock<'_>,
+        data_block: &mut DataBlock<T>,
         configuration: &CuckooConfiguration,
     ) {
         let index = rand::random_range(0..configuration.bucket_size);
         self.get_data_block(index, configuration).swap(data_block);
     }
 
-    pub(crate) fn kick_lru(
+    pub(crate) fn kick_lru<T: BorrowMut<[u8]>>(
         &mut self,
-        data_block: &mut DataBlock<'_>,
+        data_block: &mut DataBlock<T>,
         configuration: &CuckooConfiguration,
         lru_config: &(LruConfig, DataBlockFieldConfiguration),
     ) -> bool {
@@ -223,7 +226,7 @@ impl Bucket {
         &mut self,
         index: usize,
         configuration: &CuckooConfiguration,
-    ) -> DataBlock<'_> {
+    ) -> DataBlock<&mut [u8]> {
         let size = configuration.data_block_size;
         (&mut self.data[(index * size)..((index + 1) * size)]).into()
     }

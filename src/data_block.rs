@@ -1,11 +1,15 @@
 use crate::{
-    config::{
-        CounterConfig, CuckooConfiguration, CuckooConfigurationBuilder, LruConfig, TtlConfig,
-    },
+    config::{CounterConfig, CuckooConfiguration, LruConfig, TtlConfig},
     filter::CuckooFilter,
 };
-use std::hash::{BuildHasher, Hash};
-use std::ops::{Range, RangeInclusive};
+use std::{
+    borrow::Borrow,
+    hash::{BuildHasher, Hash},
+};
+use std::{
+    borrow::BorrowMut,
+    ops::{Range, RangeInclusive},
+};
 
 #[derive(Debug, Hash, Clone, PartialEq, Eq)]
 pub struct Fingerprint {
@@ -64,7 +68,7 @@ impl DataBlockFieldConfiguration {
         assert!(bits.len() <= 32);
         let start_byte = bits.start / 8; // Round down to take the lower byte
         let end_byte = (bits.end - 1) / 8;
-        let bytes = dbg!(start_byte..=end_byte);
+        let bytes = start_byte..=end_byte;
         let shift = (end_byte + 1) * 8 - bits.end;
         Self {
             bytes,
@@ -82,45 +86,28 @@ impl DataBlockFieldConfiguration {
     }
 }
 
-pub(crate) struct ReadOnlyDataBlock<'a>(&'a [u8]);
-pub(crate) struct DataBlock<'a>(&'a mut [u8]);
+pub(crate) struct DataBlock<T: Borrow<[u8]>>(T);
 
-impl<'a> From<&'a mut [u8]> for DataBlock<'a> {
+impl<'a> From<&'a mut [u8]> for DataBlock<&'a mut [u8]> {
     fn from(value: &'a mut [u8]) -> Self {
         Self(value)
     }
 }
 
-impl<'a> From<&'a [u8]> for ReadOnlyDataBlock<'a> {
+impl<'a> From<&'a [u8]> for DataBlock<&'a [u8]> {
     fn from(value: &'a [u8]) -> Self {
         Self(value)
     }
 }
 
-// TODO: traits
-impl<'a> DataBlock<'a> {
-    // Sum of bits will never reach the size of `usize`, so no need to do checked adds
-    pub(crate) fn get_size(configuration: &CuckooConfigurationBuilder) -> usize {
-        let mut bits = *configuration.fingerprint_bits;
-        if let Some(LruConfig { counter_bits, .. }) = configuration.lru {
-            bits += *counter_bits;
-        }
-        if let Some(TtlConfig { ttl_bits, .. }) = configuration.ttl {
-            bits += *ttl_bits;
-        }
-        if let Some(CounterConfig { counter_bits, .. }) = configuration.counter {
-            bits += *counter_bits;
-        }
-        bits.div_ceil(8)
-    }
-
-    pub(crate) fn inner(self) -> &'a mut [u8] {
-        self.0
+impl<T: Borrow<[u8]>> DataBlock<T> {
+    pub(crate) fn inner(&self) -> &[u8] {
+        self.0.borrow()
     }
 
     #[allow(clippy::cast_possible_truncation)]
     pub(crate) fn load_bits(&self, config: &DataBlockFieldConfiguration) -> u32 {
-        let loaded = &self.0[config.bytes.clone()];
+        let loaded = &self.0.borrow()[config.bytes.clone()];
         let mut loaded_u64 = 0;
         let len = loaded.len();
         for (i, b) in loaded.iter().enumerate() {
@@ -129,9 +116,35 @@ impl<'a> DataBlock<'a> {
         ((loaded_u64 & config.mask) >> config.shift) as u32
     }
 
+    pub(crate) fn get_fingerprint(&self, configuration: &CuckooConfiguration) -> Fingerprint {
+        self.load_bits(&configuration.fingerprint_field_config)
+            .into()
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    pub(crate) fn get_lru_counter(
+        &self,
+        configuration: &(LruConfig, DataBlockFieldConfiguration),
+    ) -> u8 {
+        self.load_bits(&configuration.1) as u8
+    }
+
+    pub(crate) fn get_counter(
+        &self,
+        configuration: &(CounterConfig, DataBlockFieldConfiguration),
+    ) -> u32 {
+        self.load_bits(&configuration.1)
+    }
+
+    pub(crate) fn get_ttl(&self, configuration: &(TtlConfig, DataBlockFieldConfiguration)) -> u32 {
+        self.load_bits(&configuration.1)
+    }
+}
+
+impl<T: BorrowMut<[u8]>> DataBlock<T> {
     pub(crate) fn store_bits(&mut self, config: &DataBlockFieldConfiguration, value: u32) {
         let masked_new_value = value & config.in_value_mask;
-        let loaded = &self.0[config.bytes.clone()];
+        let loaded = &self.0.borrow()[config.bytes.clone()];
         let len = loaded.len();
         let mut loaded_u64 = 0;
         for (i, b) in loaded.iter().enumerate() {
@@ -140,12 +153,8 @@ impl<'a> DataBlock<'a> {
         #[allow(clippy::cast_possible_truncation)]
         let masked_old_value = loaded_u64 & !config.mask;
         let final_value = masked_old_value | ((masked_new_value as u64) << config.shift);
-        self.0[config.bytes.clone()].copy_from_slice(&final_value.to_be_bytes()[(8 - len)..]);
-    }
-
-    pub(crate) fn get_fingerprint(&self, configuration: &CuckooConfiguration) -> Fingerprint {
-        self.load_bits(&configuration.fingerprint_field_config)
-            .into()
+        self.0.borrow_mut()[config.bytes.clone()]
+            .copy_from_slice(&final_value.to_be_bytes()[(8 - len)..]);
     }
 
     pub(crate) fn store_fingerprint(
@@ -157,20 +166,12 @@ impl<'a> DataBlock<'a> {
     }
 
     pub(crate) fn reset(&mut self) {
-        let len = self.0.len();
-        self.0[0..len].copy_from_slice(&vec![0u8; len]);
+        let len = self.0.borrow().len();
+        self.0.borrow_mut()[0..len].copy_from_slice(&vec![0u8; len]);
     }
 
-    pub(crate) fn swap(&mut self, other: &mut DataBlock<'_>) {
-        self.0.swap_with_slice(other.0);
-    }
-
-    #[allow(clippy::cast_possible_truncation)]
-    pub(crate) fn get_lru_counter(
-        &self,
-        configuration: &(LruConfig, DataBlockFieldConfiguration),
-    ) -> u8 {
-        self.load_bits(&configuration.1) as u8
+    pub(crate) fn swap<U: BorrowMut<[u8]>>(&mut self, other: &mut DataBlock<U>) {
+        self.0.borrow_mut().swap_with_slice(other.0.borrow_mut());
     }
 
     #[allow(clippy::cast_possible_truncation)]
@@ -191,13 +192,6 @@ impl<'a> DataBlock<'a> {
         self.store_bits(&configuration.1, (counter >> 1) as u32);
     }
 
-    pub(crate) fn get_counter(
-        &self,
-        configuration: &(LruConfig, DataBlockFieldConfiguration),
-    ) -> u32 {
-        self.load_bits(&configuration.1)
-    }
-
     pub(crate) fn inc_counter(
         &mut self,
         configuration: &(CounterConfig, DataBlockFieldConfiguration),
@@ -216,57 +210,12 @@ impl<'a> DataBlock<'a> {
         self.store_bits(&configuration.1, counter.saturating_sub(by));
     }
 
-    pub(crate) fn get_ttl(&self, configuration: &(TtlConfig, DataBlockFieldConfiguration)) -> u32 {
-        self.load_bits(&configuration.1)
-    }
-
     pub(crate) fn set_ttl(
         &mut self,
         configuration: &(TtlConfig, DataBlockFieldConfiguration),
         ttl: u32,
     ) {
         self.store_bits(&configuration.1, ttl);
-    }
-}
-
-impl<'a> ReadOnlyDataBlock<'a> {
-    #[allow(clippy::cast_possible_truncation)]
-    pub(crate) fn load_bits(&self, config: &DataBlockFieldConfiguration) -> u32 {
-        let loaded = &self.0[config.bytes.clone()];
-        let mut loaded_u64 = 0;
-        let len = loaded.len();
-        for (i, b) in loaded.iter().enumerate() {
-            loaded_u64 += (*b as u64) << ((len - (i + 1)) * 8)
-        }
-        ((loaded_u64 & config.mask) >> config.shift) as u32
-    }
-
-    pub(crate) fn inner(self) -> &'a [u8] {
-        self.0
-    }
-
-    pub(crate) fn get_fingerprint(&self, configuration: &CuckooConfiguration) -> Fingerprint {
-        self.load_bits(&configuration.fingerprint_field_config)
-            .into()
-    }
-
-    #[allow(clippy::cast_possible_truncation)]
-    pub(crate) fn get_lru_counter(
-        &self,
-        configuration: &(LruConfig, DataBlockFieldConfiguration),
-    ) -> u8 {
-        self.load_bits(&configuration.1) as u8
-    }
-
-    pub(crate) fn get_counter(
-        &self,
-        configuration: &(CounterConfig, DataBlockFieldConfiguration),
-    ) -> u32 {
-        self.load_bits(&configuration.1)
-    }
-
-    pub(crate) fn get_ttl(&self, configuration: &(TtlConfig, DataBlockFieldConfiguration)) -> u32 {
-        self.load_bits(&configuration.1)
     }
 }
 
@@ -280,7 +229,7 @@ mod tests {
         let mut data = [0u8; 4];
         let mut data_block = DataBlock::from(&mut data[..]);
         for i in 1usize..=32usize {
-            let field_config = dbg!(DataBlockFieldConfiguration::new(0..i));
+            let field_config = DataBlockFieldConfiguration::new(0..i);
             // Ensure we are using the max value possible for set bit count
             let value: u32 = ((1u64 << i) - 1).try_into().unwrap();
             data_block.reset();
@@ -303,7 +252,7 @@ mod tests {
         let mut data_block = DataBlock::from(&mut data[..]);
         data_block.store_bits(&fp_config, fp_value);
         for i in 1usize..=32usize {
-            let field_config = dbg!(DataBlockFieldConfiguration::new(data_start..data_start + i));
+            let field_config = DataBlockFieldConfiguration::new(data_start..data_start + i);
             // Ensure we are using the max value possible for set bit count
             let value: u32 = ((1u64 << i) - 1).try_into().unwrap();
             data_block.store_bits(&field_config, 0);

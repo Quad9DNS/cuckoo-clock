@@ -3,7 +3,7 @@ use std::{
     ops::{Add, Deref, DerefMut},
 };
 
-use crate::data_block::{DataBlock, DataBlockFieldConfiguration};
+use crate::data_block::DataBlockFieldConfiguration;
 
 pub struct CuckooConfigurationBuilder {
     pub(crate) fingerprint_bits: BitCount,
@@ -46,7 +46,19 @@ impl CuckooConfigurationBuilder {
             } else {
                 0
             };
-        let data_block_size = DataBlock::get_size(self);
+
+        // Sum of bits will never reach the size of `usize`, so no need to do checked adds
+        let mut data_block_size = *self.fingerprint_bits;
+        if let Some(LruConfig { counter_bits, .. }) = self.lru {
+            data_block_size += *counter_bits;
+        }
+        if let Some(TtlConfig { ttl_bits, .. }) = self.ttl {
+            data_block_size += *ttl_bits;
+        }
+        if let Some(CounterConfig { counter_bits, .. }) = self.counter {
+            data_block_size += *counter_bits;
+        }
+        data_block_size = data_block_size.div_ceil(8);
         Ok(CuckooConfiguration {
             bucket_size: self.bucket_size,
             max_kicks: self.max_kicks,
