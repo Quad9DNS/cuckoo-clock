@@ -39,29 +39,27 @@ impl From<u32> for Fingerprint {
 
 #[derive(Clone, Debug)]
 pub(crate) struct DataBlockFieldConfiguration {
-    bits: Range<usize>,
     bytes: RangeInclusive<usize>,
     mask: u32,
-    in_value_mask: u32,
 }
 
 impl DataBlockFieldConfiguration {
     pub(crate) fn new(bits: Range<usize>) -> Self {
+        assert!(bits.len() <= 32);
         let start_byte = bits.start / 8; // Round down to take the lower byte
         let end_byte = (bits.end - 1) / 8;
         let bytes = start_byte..=end_byte;
-        let len = end_byte - start_byte + 1;
         Self {
-            bits: bits.clone(),
             bytes,
-            mask: !((u32::MAX << (32 - len * 8)) >> (bits.start - start_byte * 8)),
-            // TODO: Check if the +1 is needed?
-            in_value_mask: (1u32 << (bits.len()/* + 1 */)) - 1,
+            // u64 is used to prevent overflow when bits.len() == 32
+            // The final value will be at most u32::MAX, since bits.len() is limited to be <= 32
+            #[allow(clippy::cast_possible_truncation)]
+            mask: ((1u64 << bits.len()) - 1) as u32,
         }
     }
 
     pub(crate) fn value_mask(&self) -> u32 {
-        self.in_value_mask
+        self.mask
     }
 }
 
@@ -112,12 +110,12 @@ impl<'a> DataBlock<'a> {
     }
 
     pub(crate) fn store_bits(&mut self, config: &DataBlockFieldConfiguration, value: u32) {
-        let masked_new_value = value & config.in_value_mask;
+        let masked_new_value = value & config.mask;
         let loaded = &self.0[config.bytes.clone()];
         let len = loaded.len();
         let mut loaded_u32 = 0;
         for (i, b) in loaded.iter().enumerate() {
-            loaded_u32 += (*b as u32) << ((len - i) * 8)
+            loaded_u32 += (*b as u32) << ((len - (i + 1)) * 8)
         }
         let masked_old_value = loaded_u32 & config.mask;
         let final_value = masked_old_value | masked_new_value;
@@ -247,5 +245,29 @@ impl<'a> ReadOnlyDataBlock<'a> {
 
     pub(crate) fn get_ttl(&self, configuration: &(TtlConfig, DataBlockFieldConfiguration)) -> u32 {
         self.load_bits(&configuration.1)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_load_store_for_each_bit_count() {
+        let mut data = [0u8; 4];
+        let mut data_block = DataBlock::from(&mut data[..]);
+        for i in 1usize..=32usize {
+            let field_config = DataBlockFieldConfiguration::new(0..i);
+            // Ensure we are using the max value possible for set bit count
+            let value: u32 = ((1u64 << i) - 1).try_into().unwrap();
+            data_block.reset();
+            data_block.store_bits(&field_config, value);
+            assert_eq!(
+                data_block.load_bits(&field_config),
+                value,
+                "Loaded value was different for bit count {i}"
+            );
+        }
     }
 }
