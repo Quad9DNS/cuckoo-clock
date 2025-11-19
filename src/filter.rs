@@ -44,7 +44,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
         self.configuration.bucket_count
     }
 
-    pub fn insert<K: Hash + ?Sized>(&self, key: &K) {
+    pub fn insert<K: Hash + ?Sized>(&self, key: &K) -> Option<Fingerprint> {
         let (fp, i1) = self.get_fingerprint_and_index(key);
         let now = Instant::now();
 
@@ -54,7 +54,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
             .insert(&fp, &self.configuration, now);
 
         if inserted {
-            return;
+            return None;
         }
 
         let i2 = self.alt_index(&fp, i1);
@@ -65,7 +65,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
             .insert(&fp, &self.configuration, now);
 
         if inserted {
-            return;
+            return None;
         }
 
         let mut cur_index = i1;
@@ -80,7 +80,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
                 // Replace a random item first
                 if let Some(lru_config) = self.configuration.lru_field_config.as_ref() {
                     if !bucket.kick_lru(&mut cur_data_block, &self.configuration, lru_config) {
-                        return;
+                        return Some(cur_data_block.get_fingerprint(&self.configuration));
                     }
                 } else {
                     bucket.kick_random(&mut cur_data_block, &self.configuration);
@@ -101,11 +101,12 @@ impl<H: BuildHasher> CuckooFilter<H> {
                 )
             {
                 // Found an alternative spot for evicted item, done with kicks
-                return;
+                return None;
             }
         }
 
         // Filter is full
+        Some(cur_data_block.get_fingerprint(&self.configuration))
     }
 
     pub fn contains<K: Hash + ?Sized>(&self, key: &K) -> bool {
@@ -168,6 +169,10 @@ impl<H: BuildHasher> CuckooFilter<H> {
         removed
     }
 
+    pub(crate) fn get_fingerprint<K: Hash + ?Sized>(&self, key: &K) -> Fingerprint {
+        self.get_fingerprint_and_index(key).0
+    }
+
     fn get_fingerprint_and_index<K: Hash + ?Sized>(&self, key: &K) -> (Fingerprint, u32) {
         let result = self.build_hasher.hash_one(key);
 
@@ -200,9 +205,21 @@ impl<H: BuildHasher> CuckooFilter<H> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    use std::ops::Range;
+
     use crate::config::LruConfig;
 
     use super::*;
+
+    fn get_words(range: Range<usize>) -> Vec<String> {
+        std::fs::read_to_string("/usr/share/dict/words")
+            .unwrap()
+            .split("\n")
+            .skip(range.start)
+            .take(range.len())
+            .map(ToString::to_string)
+            .collect()
+    }
 
     #[test]
     fn basic_insertion() {
@@ -272,5 +289,22 @@ mod tests {
         filter.insert("test-1");
         assert!(filter.contains("test"));
         assert!(filter.contains("test8"));
+    }
+
+    #[test]
+    fn alt_index() {
+        let words = get_words(0..200_000);
+        let filter = CuckooFilter::new_random(
+            CuckooConfiguration::builder(200_000)
+                .fingerprint_bits(32.try_into().unwrap())
+                .build()
+                .unwrap(),
+        );
+
+        for word in words {
+            let (fp, index) = filter.get_fingerprint_and_index(&word);
+            let alt_index = filter.alt_index(&fp, index);
+            assert_eq!(index, filter.alt_index(&fp, alt_index));
+        }
     }
 }

@@ -16,7 +16,11 @@ fn run_benchmark<H: BuildHasher>(
     let mut full_group = c.benchmark_group(group_name);
     full_group.throughput(Throughput::Elements(items.len() as u64));
     full_group.bench_function("insert", |b| {
-        b.iter(|| items.iter().for_each(|item| filter.insert(item)))
+        b.iter(|| {
+            items.iter().for_each(|item| {
+                let _ = filter.insert(item);
+            })
+        })
     });
     full_group.bench_function("contains", |b| {
         b.iter(|| {

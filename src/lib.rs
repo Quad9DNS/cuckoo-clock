@@ -23,8 +23,9 @@ pub mod associated_data;
 mod bucket;
 pub mod config;
 mod data_block;
-pub mod error;
+mod error;
 pub mod filter;
 
-use error::Error;
+pub use error::Error;
 pub type Result<T> = core::result::Result<T, Error>;
+pub use {config::CuckooConfiguration, data_block::Fingerprint, filter::CuckooFilter};

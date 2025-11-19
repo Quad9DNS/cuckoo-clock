@@ -1,10 +1,14 @@
-use crate::config::{
-    CounterConfig, CuckooConfiguration, CuckooConfigurationBuilder, LruConfig, TtlConfig,
+use crate::{
+    config::{
+        CounterConfig, CuckooConfiguration, CuckooConfigurationBuilder, LruConfig, TtlConfig,
+    },
+    filter::CuckooFilter,
 };
+use std::hash::{BuildHasher, Hash};
 use std::ops::{Range, RangeInclusive};
 
 #[derive(Debug, Hash, Clone, PartialEq, Eq)]
-pub(crate) struct Fingerprint {
+pub struct Fingerprint {
     data: u32,
 }
 
@@ -28,6 +32,14 @@ impl Fingerprint {
 
     pub(crate) fn data(&self) -> u32 {
         self.data
+    }
+
+    pub fn matches_key<K: Hash + ?Sized, H: BuildHasher>(
+        &self,
+        key: &K,
+        filter: &CuckooFilter<H>,
+    ) -> bool {
+        filter.get_fingerprint(key) == *self
     }
 }
 
