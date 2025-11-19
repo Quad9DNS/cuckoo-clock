@@ -35,6 +35,15 @@ fn run_benchmark<H: BuildHasher>(
     full_group.finish();
 }
 
+fn get_dict_words(size: usize) -> Vec<String> {
+    std::fs::read_to_string("/usr/share/dict/words")
+        .unwrap()
+        .split("\n")
+        .take(size)
+        .map(ToString::to_string)
+        .collect()
+}
+
 fn bench_large(c: &mut Criterion) {
     let filter = CuckooFilter::new_random(default_configuration());
     let empty_filter = CuckooFilter::new_random(default_configuration());
@@ -52,6 +61,10 @@ fn bench_large(c: &mut Criterion) {
 
     run_benchmark(c, &filter, &items, "large_full");
     run_benchmark(c, &empty_filter, &items, "large_empty");
+
+    let words_filter = CuckooFilter::new_random(default_configuration());
+    let dict_words = get_dict_words(150_000);
+    run_benchmark(c, &words_filter, &dict_words, "large_full_words");
 }
 
 fn bench_large_fingeprint(c: &mut Criterion) {

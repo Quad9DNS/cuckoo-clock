@@ -110,6 +110,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
 
     pub fn contains<K: Hash + ?Sized>(&self, key: &K) -> bool {
         let (fp, i1) = self.get_fingerprint_and_index(key);
+        // TODO: take now() only when TTL is enabled
         let now = Instant::now();
 
         let mut contains = self.buckets[i1 as usize]
