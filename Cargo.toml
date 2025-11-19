@@ -2,6 +2,7 @@
 name = "cuckoo-clock"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 
 [dependencies]
 rand = { version = "0.9.2", default-features = false, features = ["thread_rng"] }
