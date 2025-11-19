@@ -205,7 +205,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use std::ops::Range;
+    use std::{hash::Hasher, ops::Range};
 
     use crate::config::LruConfig;
 
@@ -243,52 +243,86 @@ mod tests {
         assert!(!filter.contains("basic"));
     }
 
-    // TODO: Replace with fake hasher and hashes for more control
+    struct PredefinedBucketItem(u64);
+    struct TestHasher(u64);
+    impl BuildHasher for TestHasher {
+        type Hasher = TestHasher;
+
+        fn build_hasher(&self) -> Self::Hasher {
+            TestHasher(0)
+        }
+    }
+    impl Hasher for TestHasher {
+        fn finish(&self) -> u64 {
+            self.0
+        }
+
+        fn write(&mut self, bytes: &[u8]) {
+            if bytes.len() == 8 {
+                self.0 = u64::from_ne_bytes(bytes.try_into().unwrap());
+            } else {
+                // Shift fingeprint hashes a bit, to allow control
+                self.0 = 1 - (u32::from_ne_bytes(bytes.try_into().unwrap()) as u64 % 2);
+            }
+        }
+    }
+    impl Hash for PredefinedBucketItem {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            state.write_u64(self.0);
+        }
+    }
+
     #[test]
     fn lru_insertion() {
-        let filter = CuckooFilter::new_random(
+        let filter = CuckooFilter::new(
             CuckooConfiguration::builder(1000)
+                .bucket_size(2)
                 .with_lru(LruConfig {
                     counter_bits: 8.try_into().unwrap(),
                 })
                 .build()
                 .unwrap(),
+            TestHasher(0),
         );
 
-        filter.insert("test");
-        filter.contains("test"); // Make it more used than others
+        let test_item = PredefinedBucketItem(2 << 32);
+        filter.insert(&test_item);
+        filter.contains(&test_item); // Make it more used than others
 
-        filter.insert("test-1"); // Sharing the same bucket as "test", but less used
+        let test_item_2 = PredefinedBucketItem(4 << 32);
+        filter.insert(&test_item_2); // Sharing the same bucket as "test", but less used
 
-        filter.insert("test8"); // Another bucket, but also valid for "test" bucket
-        filter.contains("test8"); // Make it more used
+        let test_item_3 = PredefinedBucketItem((3 << 32) + 2);
+        filter.insert(&test_item_3); // Another bucket, but also valid for "test" bucket
+        filter.contains(&test_item_3); // Make it more used
 
-        filter.insert("test25"); // Takes bucket of "test8", but less used
+        let test_item_4 = PredefinedBucketItem((5 << 32) + 2);
+        filter.insert(&test_item_4); // Takes bucket of "test8", but less used
 
         // Everything fits now
-        assert!(filter.contains("test"));
-        assert!(filter.contains("test-1"));
-        assert!(filter.contains("test8"));
-        assert!(filter.contains("test25"));
+        assert!(filter.contains(&test_item));
+        assert!(filter.contains(&test_item_2));
+        assert!(filter.contains(&test_item_3));
+        assert!(filter.contains(&test_item_4));
 
+        let test_item_5 = PredefinedBucketItem((1 << 32) + 2);
         // Insert a new item which has to take one of the 2 fully occupied buckets
-        filter.insert("test85");
+        filter.insert(&test_item_5);
 
-        assert!(filter.contains("test85"));
-        assert!(filter.contains("test"));
-        assert!(filter.contains("test8"));
+        assert!(filter.contains(&test_item_2));
+        assert!(filter.contains(&test_item));
+        assert!(filter.contains(&test_item_3));
 
-        // Either test test25 or test-1 should be missing
         assert!(
-            !filter.contains("test25") || !filter.contains("test-1"),
+            !filter.contains(&test_item_5) || !filter.contains(&test_item_4),
             "No inserted items are missing, but filter can't hold them all"
         );
 
         // Insert both of these items again and confirm the more used ones are still there
-        filter.insert("test25");
-        filter.insert("test-1");
-        assert!(filter.contains("test"));
-        assert!(filter.contains("test8"));
+        filter.insert(&test_item_5);
+        filter.insert(&test_item_4);
+        assert!(filter.contains(&test_item));
+        assert!(filter.contains(&test_item_3));
     }
 
     #[test]
