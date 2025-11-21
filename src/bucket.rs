@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     associated_data::AssociatedData,
-    config::{CuckooConfiguration, LruConfig},
+    config::{CuckooConfiguration, LruConfig, TtlConfig},
     data_block::{DataBlock, DataBlockFieldConfiguration, Fingerprint},
 };
 
@@ -26,9 +26,7 @@ impl Bucket {
         &mut self,
         fingerprint: &Fingerprint,
         configuration: &CuckooConfiguration,
-        now: Instant,
     ) -> bool {
-        let baseline = self.ttl_baseline;
         for i in 0..configuration.bucket_size {
             let mut data = self.get_data_block(i, configuration);
             let stored = data.get_fingerprint(configuration);
@@ -38,58 +36,19 @@ impl Bucket {
             if !reinsert {
                 if stored.is_empty() {
                     data.store_fingerprint(fingerprint, configuration);
-                } else if configuration.ttl_field_config.as_ref().is_some_and(|t| {
-                    baseline
-                        + (Duration::from_secs(data.get_ttl(t).into()) * t.0.ttl_resolution.into())
-                        <= now
-                }) {
-                    // Clear out whatever TTL or other options it had
-                    data.reset();
-                    data.store_fingerprint(fingerprint, configuration);
                 } else {
                     continue;
                 }
             }
 
-            let mut ttl_to_store = 0;
-
-            if let Some(ttl_config) = &configuration.ttl_field_config {
-                let ttl_from_baseline = (now - baseline).as_secs().try_into().map(|d: u32| {
-                    d / u32::from(ttl_config.0.ttl_resolution) + u32::from(ttl_config.0.ttl)
-                });
-                // TTL is too big to store, move up the baseline and readjust
-                // diff / resolution won't be > 32 bits inside this block
-                #[allow(clippy::cast_possible_truncation)]
-                if ttl_from_baseline.is_err()
-                    || ttl_from_baseline
-                        .is_ok_and(|ttl| ttl as u64 > 2u64.pow(ttl_config.0.ttl_bits.into()))
-                {
-                    let diff = now - baseline;
-                    self.ttl_baseline += diff;
-                    ttl_to_store -=
-                        (diff.as_secs() / u32::from(ttl_config.0.ttl_resolution) as u64) as u32;
-
-                    for i in 0..configuration.bucket_size {
-                        let item_ttl = self.get_data_block(i, configuration).get_ttl(ttl_config);
-                        let item_ttl = item_ttl.saturating_sub(
-                            (diff.as_secs() / u32::from(ttl_config.0.ttl_resolution) as u64) as u32,
-                        );
-                        self.get_data_block(i, configuration)
-                            .set_ttl(ttl_config, item_ttl);
-                    }
-                }
-            }
-
-            // Fetch data again for borrow checker
-            let mut data = self.get_data_block(i, configuration);
             if let Some(ttl_config) = configuration.ttl_field_config.as_ref() {
-                data.set_ttl(ttl_config, ttl_to_store);
+                data.set_ttl(ttl_config, ttl_config.0.ttl.into());
             }
             if let Some(counter_config) = configuration.counter_field_config.as_ref() {
                 data.inc_counter(counter_config, 1);
             }
-            if reinsert && let Some(lru_config) = configuration.lru_field_config.as_ref() {
-                self.increment_lru_counter(i, configuration, lru_config);
+            if let Some(lru_config) = configuration.lru_field_config.as_ref() {
+                data.inc_lru_counter(lru_config);
             }
             return true;
         }
@@ -111,7 +70,10 @@ impl Bucket {
         configuration: &CuckooConfiguration,
         lru_config: &(LruConfig, DataBlockFieldConfiguration),
     ) -> bool {
-        let mut min = u8::MAX;
+        let mut min = data_block.get_lru_counter(lru_config);
+        if min == 0 {
+            min = u8::MAX;
+        }
         let mut pos = configuration.bucket_size;
         for i in 0..configuration.bucket_size {
             let data = self.get_data_block(i, configuration);
@@ -134,30 +96,17 @@ impl Bucket {
         &mut self,
         fingerprint: &Fingerprint,
         configuration: &CuckooConfiguration,
-        now: Instant,
     ) -> bool {
-        let baseline = self.ttl_baseline;
         for i in 0..configuration.bucket_size {
             let mut data = self.get_data_block(i, configuration);
             let stored = data.get_fingerprint(configuration);
 
             if stored == *fingerprint {
-                if let Some(ttl_config) = &configuration.ttl_field_config {
-                    let ttl = data.get_ttl(ttl_config);
-                    if baseline
-                        + Duration::from_secs(ttl as u64) * ttl_config.0.ttl_resolution.into()
-                        <= now
-                    {
-                        // Expired item
-                        data.reset();
-                        return false;
-                    }
-                }
                 if let Some(counter_config) = configuration.counter_field_config.as_ref() {
                     data.inc_counter(counter_config, 1);
                 }
                 if let Some(lru_config) = configuration.lru_field_config.as_ref() {
-                    self.increment_lru_counter(i, configuration, lru_config);
+                    data.inc_lru_counter(lru_config);
                 }
                 return true;
             }
@@ -169,36 +118,21 @@ impl Bucket {
         &mut self,
         fingerprint: &Fingerprint,
         configuration: &CuckooConfiguration,
-        now: Instant,
     ) -> Option<AssociatedData> {
-        let baseline = self.ttl_baseline;
         for i in 0..configuration.bucket_size {
             let mut data = self.get_data_block(i, configuration);
             let stored = data.get_fingerprint(configuration);
 
             if stored == *fingerprint {
-                if let Some(ttl_config) = &configuration.ttl_field_config {
-                    let ttl = data.get_ttl(ttl_config);
-                    if baseline
-                        + Duration::from_secs(ttl as u64) * u32::from(ttl_config.0.ttl_resolution)
-                        <= now
-                    {
-                        // Expired item
-                        data.reset();
-                        return None;
-                    }
-                }
                 if let Some(counter_config) = configuration.counter_field_config.as_ref() {
                     data.inc_counter(counter_config, 1);
                 }
                 if let Some(lru_config) = configuration.lru_field_config.as_ref() {
-                    self.increment_lru_counter(i, configuration, lru_config);
+                    data.inc_lru_counter(lru_config);
                 }
-                let baseline = self.ttl_baseline;
                 return Some(AssociatedData::new(
                     self.get_data_block(i, configuration),
                     configuration.clone(),
-                    baseline,
                 ));
             }
         }
@@ -231,24 +165,25 @@ impl Bucket {
         (&mut self.data[(index * size)..((index + 1) * size)]).into()
     }
 
-    fn increment_lru_counter(
+    pub(crate) fn age_lru_counters(
         &mut self,
-        index: usize,
         configuration: &CuckooConfiguration,
         lru_config: &(LruConfig, DataBlockFieldConfiguration),
     ) {
-        if self
-            .get_data_block(index, configuration)
-            .get_lru_counter(lru_config)
-            == u8::MAX
-        {
-            // Age all counters when one saturates
-            for i in 0..configuration.bucket_size {
-                self.get_data_block(i, configuration)
-                    .age_lru_counter(lru_config);
-            }
+        for i in 0..configuration.bucket_size {
+            self.get_data_block(i, configuration)
+                .age_lru_counter(lru_config);
         }
-        self.get_data_block(index, configuration)
-            .inc_lru_counter(lru_config);
+    }
+
+    pub(crate) fn age_ttl_counters(
+        &mut self,
+        configuration: &CuckooConfiguration,
+        ttl_config: &(TtlConfig, DataBlockFieldConfiguration),
+    ) {
+        for i in 0..configuration.bucket_size {
+            self.get_data_block(i, configuration)
+                .age_ttl_counter(ttl_config);
+        }
     }
 }

@@ -166,8 +166,7 @@ impl<T: BorrowMut<[u8]>> DataBlock<T> {
     }
 
     pub(crate) fn reset(&mut self) {
-        let len = self.0.borrow().len();
-        self.0.borrow_mut()[0..len].copy_from_slice(&vec![0u8; len]);
+        self.0.borrow_mut().fill(0u8);
     }
 
     pub(crate) fn swap<U: BorrowMut<[u8]>>(&mut self, other: &mut DataBlock<U>) {
@@ -192,6 +191,20 @@ impl<T: BorrowMut<[u8]>> DataBlock<T> {
         self.store_bits(&configuration.1, (counter >> 1) as u32);
     }
 
+    #[allow(clippy::cast_possible_truncation)]
+    pub(crate) fn age_ttl_counter(
+        &mut self,
+        configuration: &(TtlConfig, DataBlockFieldConfiguration),
+    ) {
+        let mut counter = self.load_bits(&configuration.1);
+        counter = counter.saturating_sub(1);
+        self.store_bits(&configuration.1, counter);
+        if counter == 0 {
+            self.reset();
+        }
+    }
+
+    // TODO: saturating add/sub doesn't consider the case of numbers lower than u32
     pub(crate) fn inc_counter(
         &mut self,
         configuration: &(CounterConfig, DataBlockFieldConfiguration),
@@ -267,6 +280,39 @@ mod tests {
             data_block.load_bits(&fp_config),
             fp_value,
             "Loads/stores wrote outside of their bits"
+        );
+    }
+
+    #[test]
+    fn test_load_store_full_config() {
+        let config = CuckooConfiguration::builder(100_000)
+            .fingerprint_bits(32.try_into().unwrap())
+            .with_lru(LruConfig::default())
+            .with_ttl(TtlConfig {
+                ttl: 10.try_into().unwrap(),
+                ttl_bits: 4.try_into().unwrap(),
+            })
+            .build()
+            .unwrap();
+        let mut data = [0u8; 6];
+        let mut data_block = DataBlock::from(&mut data[..]);
+        let fp_value = 0b1010101010101u32;
+
+        data_block.store_fingerprint(&Fingerprint { data: fp_value }, &config);
+        data_block.inc_lru_counter(config.lru_field_config.as_ref().unwrap());
+        data_block.set_ttl(config.ttl_field_config.as_ref().unwrap(), 10);
+
+        data_block.age_lru_counter(config.lru_field_config.as_ref().unwrap());
+        data_block.age_ttl_counter(config.ttl_field_config.as_ref().unwrap());
+
+        assert_eq!(data_block.get_fingerprint(&config).data(), fp_value);
+        assert_eq!(
+            data_block.get_ttl(config.ttl_field_config.as_ref().unwrap()),
+            9
+        );
+        assert_eq!(
+            data_block.get_lru_counter(config.lru_field_config.as_ref().unwrap()),
+            0
         );
     }
 }

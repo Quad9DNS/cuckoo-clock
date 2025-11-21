@@ -26,6 +26,9 @@ impl CuckooFilter<RandomState> {
     }
 }
 
+// TODO: Update all `mutex posioned` expects
+// We should still use expect, because we shouldn't panic anywhere
+// But make it clearer that that is a bug in the library
 #[allow(clippy::expect_used)]
 impl<H: BuildHasher> CuckooFilter<H> {
     pub fn new(configuration: CuckooConfiguration, build_hasher: H) -> Self {
@@ -46,12 +49,11 @@ impl<H: BuildHasher> CuckooFilter<H> {
 
     pub fn insert<K: Hash + ?Sized>(&self, key: &K) -> Option<Fingerprint> {
         let (fp, i1) = self.get_fingerprint_and_index(key);
-        let now = Instant::now();
 
         let inserted = self.buckets[i1 as usize]
             .lock()
             .expect("mutex poisoned")
-            .insert(&fp, &self.configuration, now);
+            .insert(&fp, &self.configuration);
 
         if inserted {
             return None;
@@ -62,7 +64,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
         let inserted = self.buckets[i2 as usize]
             .lock()
             .expect("mutex poisoned")
-            .insert(&fp, &self.configuration, now);
+            .insert(&fp, &self.configuration);
 
         if inserted {
             return None;
@@ -72,6 +74,12 @@ impl<H: BuildHasher> CuckooFilter<H> {
         let mut data = vec![0u8; self.configuration.data_block_size];
         let mut cur_data_block = DataBlock::from(&mut data[..]);
         cur_data_block.store_fingerprint(&fp, &self.configuration);
+        if let Some(ttl_config) = &self.configuration.ttl_field_config {
+            cur_data_block.set_ttl(ttl_config, ttl_config.0.ttl.into());
+        }
+        if let Some(lru_config) = &self.configuration.lru_field_config {
+            cur_data_block.inc_lru_counter(lru_config);
+        }
         for _ in 0..self.configuration.max_kicks {
             {
                 let mut bucket = self.buckets[cur_index as usize]
@@ -97,7 +105,6 @@ impl<H: BuildHasher> CuckooFilter<H> {
                 .insert(
                     &cur_data_block.get_fingerprint(&self.configuration),
                     &self.configuration,
-                    now,
                 )
             {
                 // Found an alternative spot for evicted item, done with kicks
@@ -111,20 +118,18 @@ impl<H: BuildHasher> CuckooFilter<H> {
 
     pub fn contains<K: Hash + ?Sized>(&self, key: &K) -> bool {
         let (fp, i1) = self.get_fingerprint_and_index(key);
-        // TODO: take now() only when TTL is enabled
-        let now = Instant::now();
 
         let mut contains = self.buckets[i1 as usize]
             .lock()
             .expect("mutex poisoned")
-            .contains(&fp, &self.configuration, now);
+            .contains(&fp, &self.configuration);
 
         if !contains {
             let i2 = self.alt_index(&fp, i1);
             contains = self.buckets[i2 as usize]
                 .lock()
                 .expect("mutex poisoned")
-                .contains(&fp, &self.configuration, now);
+                .contains(&fp, &self.configuration);
         }
 
         contains
@@ -132,19 +137,18 @@ impl<H: BuildHasher> CuckooFilter<H> {
 
     pub fn get_associated_data<K: Hash + ?Sized>(&self, key: &K) -> Option<AssociatedData> {
         let (fp, i1) = self.get_fingerprint_and_index(key);
-        let now = Instant::now();
 
         let mut contains = self.buckets[i1 as usize]
             .lock()
             .expect("mutex poisoned")
-            .get_associated_data(&fp, &self.configuration, now);
+            .get_associated_data(&fp, &self.configuration);
 
         if contains.is_none() {
             let i2 = self.alt_index(&fp, i1);
             contains = self.buckets[i2 as usize]
                 .lock()
                 .expect("mutex poisoned")
-                .get_associated_data(&fp, &self.configuration, now);
+                .get_associated_data(&fp, &self.configuration);
         }
 
         contains
@@ -167,6 +171,18 @@ impl<H: BuildHasher> CuckooFilter<H> {
         }
 
         removed
+    }
+
+    pub fn full_scan_and_update(&self) {
+        for b in self.buckets.iter() {
+            let mut bucket = b.lock().expect("mutex poisoned");
+            if let Some(lru_config) = &self.configuration.lru_field_config {
+                bucket.age_lru_counters(&self.configuration, lru_config);
+            }
+            if let Some(ttl_config) = &self.configuration.ttl_field_config {
+                bucket.age_ttl_counters(&self.configuration, ttl_config);
+            }
+        }
     }
 
     pub(crate) fn get_fingerprint<K: Hash + ?Sized>(&self, key: &K) -> Fingerprint {
@@ -205,9 +221,9 @@ impl<H: BuildHasher> CuckooFilter<H> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use std::{hash::Hasher, ops::Range};
+    use std::{collections::HashSet, hash::Hasher, ops::Range};
 
-    use crate::config::LruConfig;
+    use crate::config::{LruConfig, TtlConfig};
 
     use super::*;
 
@@ -339,6 +355,57 @@ mod tests {
             let (fp, index) = filter.get_fingerprint_and_index(&word);
             let alt_index = filter.alt_index(&fp, index);
             assert_eq!(index, filter.alt_index(&fp, alt_index));
+        }
+    }
+
+    // TODO: test kicks and how they preserve/insert new data
+
+    #[test]
+    fn full_scan_and_update() {
+        let words = get_words(0..100_000);
+        let filter = CuckooFilter::new_random(
+            CuckooConfiguration::builder(100_000)
+                .fingerprint_bits(32.try_into().unwrap())
+                .with_lru(LruConfig::default())
+                .with_ttl(TtlConfig {
+                    ttl: 3.try_into().unwrap(),
+                    ttl_bits: 2.try_into().unwrap(),
+                })
+                .build()
+                .unwrap(),
+        );
+
+        let mut stored_words = HashSet::new();
+
+        for (index, word) in words.iter().enumerate() {
+            stored_words.insert(word);
+            if let Some(evicted_fp) = filter.insert(word) {
+                words[0..=index]
+                    .iter()
+                    .filter(|w| evicted_fp.matches_key(w, &filter))
+                    .for_each(|evicted_word| {
+                        stored_words.remove(evicted_word);
+                    });
+            }
+        }
+
+        for _ in 0..2 {
+            filter.full_scan_and_update();
+        }
+        for word in stored_words {
+            assert!(
+                filter.contains(word),
+                "Word: {word} expected in the filter, but not found"
+            );
+        }
+
+        // TTL should remove all entries now
+        filter.full_scan_and_update();
+        for word in &words {
+            assert!(
+                !filter.contains(word),
+                "Filter contained {word}, but shouldn't have"
+            );
         }
     }
 }

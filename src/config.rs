@@ -31,6 +31,11 @@ impl CuckooConfigurationBuilder {
         self
     }
 
+    pub fn with_ttl(&mut self, ttl: TtlConfig) -> &mut Self {
+        self.ttl = Some(ttl);
+        self
+    }
+
     pub fn build(&self) -> crate::Result<CuckooConfiguration> {
         let required_bucket_count = self.max_entries.div_ceil(self.bucket_size);
         let bucket_count = required_bucket_count.next_power_of_two();
@@ -131,7 +136,6 @@ impl Default for LruConfig {
 pub struct TtlConfig {
     pub ttl: NonZeroU32,
     pub ttl_bits: BitCount,
-    pub ttl_resolution: NonZeroU32,
 }
 
 #[derive(Clone, Debug)]

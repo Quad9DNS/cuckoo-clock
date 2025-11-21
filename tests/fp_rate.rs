@@ -1,6 +1,9 @@
 use std::{collections::HashSet, hash::BuildHasher, ops::Range};
 
-use cuckoo_clock::{config::CuckooConfiguration, filter::CuckooFilter};
+use cuckoo_clock::{
+    config::{CuckooConfiguration, LruConfig, TtlConfig},
+    filter::CuckooFilter,
+};
 
 fn get_words(range: Range<usize>) -> Vec<String> {
     std::fs::read_to_string("/usr/share/dict/words")
@@ -21,18 +24,17 @@ fn run_fp_rate_test<H: BuildHasher>(
     let words = get_words(0..item_count);
     let next_words = get_words(item_count..item_count * 2);
 
-    let mut evicted_words = HashSet::new();
     let mut stored_words = HashSet::new();
 
     for (index, word) in words.iter().enumerate() {
         stored_words.insert(word);
         if let Some(evicted_fp) = filter.insert(word) {
-            let evicted_word = words[0..index]
+            words[0..=index]
                 .iter()
-                .find(|w| evicted_fp.matches_key(w, &filter))
-                .unwrap();
-            evicted_words.insert(evicted_word.clone());
-            stored_words.remove(evicted_word);
+                .filter(|w| evicted_fp.matches_key(w, &filter))
+                .for_each(|evicted_word| {
+                    stored_words.remove(evicted_word);
+                });
         }
     }
 
@@ -61,6 +63,46 @@ fn run_fp_rate_test<H: BuildHasher>(
 #[test]
 fn fp_rate_default() {
     let filter = CuckooFilter::new_random(CuckooConfiguration::builder(100_000).build().unwrap());
+    run_fp_rate_test(100_000, filter, 0.03);
+}
+
+#[test]
+fn fp_rate_default_with_lru() {
+    let filter = CuckooFilter::new_random(
+        CuckooConfiguration::builder(100_000)
+            .with_lru(LruConfig::default())
+            .build()
+            .unwrap(),
+    );
+    run_fp_rate_test(100_000, filter, 0.03);
+}
+
+#[test]
+fn fp_rate_default_with_ttl() {
+    let filter = CuckooFilter::new_random(
+        CuckooConfiguration::builder(100_000)
+            .with_ttl(TtlConfig {
+                ttl: 10.try_into().unwrap(),
+                ttl_bits: 8.try_into().unwrap(),
+            })
+            .build()
+            .unwrap(),
+    );
+    run_fp_rate_test(100_000, filter, 0.03);
+}
+
+#[test]
+fn fp_rate_default_with_lru_and_ttl() {
+    let filter = CuckooFilter::new_random(
+        CuckooConfiguration::builder(100_000)
+            .with_lru(LruConfig::default())
+            .with_ttl(TtlConfig {
+                ttl: 10.try_into().unwrap(),
+                ttl_bits: 8.try_into().unwrap(),
+            })
+            .build()
+            .unwrap(),
+    );
     run_fp_rate_test(100_000, filter, 0.03);
 }
 
