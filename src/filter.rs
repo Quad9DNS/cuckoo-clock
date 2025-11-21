@@ -2,7 +2,6 @@ use std::{
     hash::{BuildHasher, Hash, RandomState},
     iter::repeat_with,
     sync::{Arc, Mutex},
-    time::Instant,
 };
 
 use crate::{
@@ -32,10 +31,9 @@ impl CuckooFilter<RandomState> {
 #[allow(clippy::expect_used)]
 impl<H: BuildHasher> CuckooFilter<H> {
     pub fn new(configuration: CuckooConfiguration, build_hasher: H) -> Self {
-        let now = Instant::now();
         Self {
             configuration: configuration.clone(),
-            buckets: repeat_with(|| Bucket::new(&configuration, now).into())
+            buckets: repeat_with(|| Bucket::new(&configuration).into())
                 .take(configuration.bucket_count)
                 .collect::<Vec<_>>()
                 .into(),

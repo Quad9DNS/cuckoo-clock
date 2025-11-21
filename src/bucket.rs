@@ -1,7 +1,4 @@
-use std::{
-    borrow::BorrowMut,
-    time::{Duration, Instant},
-};
+use std::borrow::BorrowMut;
 
 use crate::{
     associated_data::AssociatedData,
@@ -11,14 +8,12 @@ use crate::{
 
 pub(crate) struct Bucket {
     data: Vec<u8>,
-    pub(crate) ttl_baseline: Instant,
 }
 
 impl Bucket {
-    pub(crate) fn new(configuration: &CuckooConfiguration, now: Instant) -> Self {
+    pub(crate) fn new(configuration: &CuckooConfiguration) -> Self {
         Self {
             data: vec![0; configuration.bucket_byte_size],
-            ttl_baseline: now,
         }
     }
 
@@ -72,6 +67,7 @@ impl Bucket {
     ) -> bool {
         let mut min = data_block.get_lru_counter(lru_config);
         if min == 0 {
+            // TODO: What happens if LRU is really at 0?
             min = u8::MAX;
         }
         let mut pos = configuration.bucket_size;
