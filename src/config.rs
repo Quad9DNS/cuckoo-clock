@@ -26,6 +26,11 @@ impl CuckooConfigurationBuilder {
         self
     }
 
+    pub fn max_kicks(&mut self, kicks: usize) -> &mut Self {
+        self.max_kicks = kicks;
+        self
+    }
+
     pub fn with_lru(&mut self, lru: LruConfig) -> &mut Self {
         self.lru = Some(lru);
         self
