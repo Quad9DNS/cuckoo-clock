@@ -4,6 +4,7 @@ use std::fmt::Display;
 pub enum Error {
     BucketTooBig,
     BitCountTooHigh,
+    BitCountZero,
     FeatureNotEnabled(String),
 }
 
@@ -14,6 +15,7 @@ impl Display for Error {
                 f.write_str("Filter configuration requires buckets that are too big!")
             }
             Error::BitCountTooHigh => f.write_str("Bit count is too high! Max is 32."),
+            Error::BitCountZero => f.write_str("Bit count can't be zero!"),
             Error::FeatureNotEnabled(feature) => {
                 f.write_str(&format!("Feature ({feature}) not enabled."))
             }

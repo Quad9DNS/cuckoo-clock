@@ -11,6 +11,7 @@ pub(crate) struct Bucket {
 }
 
 impl Bucket {
+    // panics on OOM errors
     pub(crate) fn new(configuration: &CuckooConfiguration) -> Self {
         Self {
             data: vec![0; configuration.bucket_byte_size],

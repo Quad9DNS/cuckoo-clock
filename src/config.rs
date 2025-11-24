@@ -1,5 +1,5 @@
 use std::{
-    num::NonZeroU32,
+    num::{NonZeroU32, NonZeroUsize},
     ops::{Add, Deref, DerefMut},
 };
 
@@ -7,7 +7,7 @@ use crate::data_block::DataBlockFieldConfiguration;
 
 pub struct CuckooConfigurationBuilder {
     pub(crate) fingerprint_bits: BitCount,
-    pub(crate) bucket_size: usize,
+    pub(crate) bucket_size: NonZeroUsize,
     pub(crate) max_entries: usize,
     pub(crate) max_kicks: usize,
     pub(crate) lru: Option<LruConfig>,
@@ -23,7 +23,7 @@ impl CuckooConfigurationBuilder {
     }
 
     #[must_use]
-    pub const fn bucket_size(mut self, size: usize) -> Self {
+    pub const fn bucket_size(mut self, size: NonZeroUsize) -> Self {
         self.bucket_size = size;
         self
     }
@@ -47,7 +47,7 @@ impl CuckooConfigurationBuilder {
     }
 
     pub fn build(&self) -> crate::Result<CuckooConfiguration> {
-        let required_bucket_count = self.max_entries.div_ceil(self.bucket_size);
+        let required_bucket_count = self.max_entries.div_ceil(self.bucket_size.get());
         let bucket_count = required_bucket_count.next_power_of_two();
         let ttl_start = *self.fingerprint_bits
             + if let Some(LruConfig { counter_bits, .. }) = self.lru {
@@ -75,7 +75,7 @@ impl CuckooConfigurationBuilder {
         }
         data_block_size = data_block_size.div_ceil(8);
         Ok(CuckooConfiguration {
-            bucket_size: self.bucket_size,
+            bucket_size: self.bucket_size.get(),
             max_kicks: self.max_kicks,
 
             fingerprint_field_config: DataBlockFieldConfiguration::new(0..*self.fingerprint_bits),
@@ -120,6 +120,7 @@ impl CuckooConfigurationBuilder {
             data_block_size,
             bucket_byte_size: self
                 .bucket_size
+                .get()
                 .checked_mul(data_block_size)
                 .ok_or(crate::Error::BucketTooBig)?,
             bucket_count,
@@ -181,7 +182,8 @@ impl CuckooConfiguration {
     pub const fn builder(max_entries: usize) -> CuckooConfigurationBuilder {
         CuckooConfigurationBuilder {
             fingerprint_bits: BitCount(8),
-            bucket_size: 4,
+            #[allow(clippy::expect_used)]
+            bucket_size: NonZeroUsize::new(4).expect("4 != 0"),
             max_entries,
             max_kicks: 500,
             lru: None,
@@ -214,6 +216,9 @@ impl TryFrom<usize> for BitCount {
     fn try_from(value: usize) -> Result<Self, Self::Error> {
         if value > 32 {
             return Err(crate::error::Error::BitCountTooHigh);
+        }
+        if value == 0 {
+            return Err(crate::error::Error::BitCountZero);
         }
         Ok(Self(value))
     }

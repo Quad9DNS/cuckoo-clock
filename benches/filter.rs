@@ -122,7 +122,7 @@ fn bench_large_fingeprint(c: &mut Criterion) {
 fn bench_large_buckets(c: &mut Criterion) {
     let config = CuckooConfiguration::builder(1_000_000)
         .fingerprint_bits(32.try_into().unwrap())
-        .bucket_size(100)
+        .bucket_size(100.try_into().unwrap())
         .build()
         .unwrap();
     let filter = CuckooFilter::new_random(config.clone());

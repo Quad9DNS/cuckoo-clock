@@ -30,6 +30,7 @@ impl CuckooFilter<RandomState> {
 // But make it clearer that that is a bug in the library
 #[allow(clippy::expect_used)]
 impl<H: BuildHasher> CuckooFilter<H> {
+    // panics on too large allocations
     pub fn new(configuration: CuckooConfiguration, build_hasher: H) -> Self {
         Self {
             configuration: configuration.clone(),
@@ -378,7 +379,7 @@ mod tests {
     fn lru_insertion() {
         let filter = CuckooFilter::new(
             CuckooConfiguration::builder(1000)
-                .bucket_size(2)
+                .bucket_size(2.try_into().unwrap())
                 .with_lru(LruConfig {
                     counter_bits: 8.try_into().unwrap(),
                 })
