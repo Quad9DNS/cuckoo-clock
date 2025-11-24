@@ -16,27 +16,32 @@ pub struct CuckooConfigurationBuilder {
 }
 
 impl CuckooConfigurationBuilder {
-    pub const fn fingerprint_bits(&mut self, bits: BitCount) -> &mut Self {
+    #[must_use]
+    pub const fn fingerprint_bits(mut self, bits: BitCount) -> Self {
         self.fingerprint_bits = bits;
         self
     }
 
-    pub const fn bucket_size(&mut self, size: usize) -> &mut Self {
+    #[must_use]
+    pub const fn bucket_size(mut self, size: usize) -> Self {
         self.bucket_size = size;
         self
     }
 
-    pub const fn max_kicks(&mut self, kicks: usize) -> &mut Self {
+    #[must_use]
+    pub const fn max_kicks(mut self, kicks: usize) -> Self {
         self.max_kicks = kicks;
         self
     }
 
-    pub const fn with_lru(&mut self, lru: LruConfig) -> &mut Self {
+    #[must_use]
+    pub const fn with_lru(mut self, lru: LruConfig) -> Self {
         self.lru = Some(lru);
         self
     }
 
-    pub const fn with_ttl(&mut self, ttl: TtlConfig) -> &mut Self {
+    #[must_use]
+    pub const fn with_ttl(mut self, ttl: TtlConfig) -> Self {
         self.ttl = Some(ttl);
         self
     }
