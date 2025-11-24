@@ -75,6 +75,16 @@ fuzz_target!(|conf: CuckooConf| -> Corpus {
     for insert in &conf.inserts {
         filter.insert(insert);
         assert!(filter.contains(insert));
+        let data = filter.get_associated_data(insert);
+        assert!(data.is_some());
+        let data = data.unwrap();
+        let fp = data.get_fingerprint();
+        // TODO: this test probably doesn't make sense - 0 FP value representing and empty
+        // fingerprint is an implementation detail
+        assert!(fp != 0);
+        let _ = data.get_stored_ttl_value();
+        let _ = data.get_lru_counter();
+        let _ = data.get_counter();
     }
 
     for lookup in &conf.lookups {
