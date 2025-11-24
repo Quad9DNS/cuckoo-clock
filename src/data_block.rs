@@ -178,8 +178,13 @@ impl<T: BorrowMut<[u8]>> DataBlock<T> {
         &mut self,
         configuration: &(LruConfig, DataBlockFieldConfiguration),
     ) {
-        let counter = self.load_bits(&configuration.1) as u8;
-        self.store_bits(&configuration.1, (counter + 1) as u32);
+        let counter = self.load_bits(&configuration.1);
+        let mut new_counter = counter.saturating_add(1);
+        // Value mask is also the max possible value
+        if new_counter > configuration.1.value_mask() {
+            new_counter = configuration.1.value_mask();
+        }
+        self.store_bits(&configuration.1, new_counter);
     }
 
     #[allow(clippy::cast_possible_truncation)]
@@ -204,14 +209,18 @@ impl<T: BorrowMut<[u8]>> DataBlock<T> {
         }
     }
 
-    // TODO: saturating add/sub doesn't consider the case of numbers lower than u32
     pub(crate) fn inc_counter(
         &mut self,
         configuration: &(CounterConfig, DataBlockFieldConfiguration),
         by: u32,
     ) {
         let counter = self.load_bits(&configuration.1);
-        self.store_bits(&configuration.1, counter.saturating_add(by));
+        let mut new_counter = counter.saturating_add(by);
+        // Value mask is also the max possible value
+        if new_counter > configuration.1.value_mask() {
+            new_counter = configuration.1.value_mask();
+        }
+        self.store_bits(&configuration.1, new_counter);
     }
 
     pub(crate) fn dec_counter(
@@ -314,5 +323,34 @@ mod tests {
             data_block.get_lru_counter(config.lru_field_config.as_ref().unwrap()),
             0
         );
+    }
+
+    #[test]
+    fn test_inc_counter_saturation() {
+        let config = CuckooConfiguration::builder(100_000)
+            .fingerprint_bits(8.try_into().unwrap())
+            .with_lru(LruConfig {
+                counter_bits: 2.try_into().unwrap(),
+            })
+            .build()
+            .unwrap();
+
+        let mut data = [0u8; 2];
+        let mut data_block = DataBlock::from(&mut data[..]);
+
+        let lru_config = config.lru_field_config.as_ref().unwrap();
+
+        data_block.inc_lru_counter(lru_config);
+        data_block.inc_lru_counter(lru_config);
+        data_block.inc_lru_counter(lru_config);
+
+        assert_eq!(data_block.get_lru_counter(lru_config), 3);
+
+        // Since counter is limited at 2 bits, it shouldn't be able to go over 3
+        data_block.inc_lru_counter(lru_config);
+        assert_eq!(data_block.get_lru_counter(lru_config), 3);
+
+        data_block.age_lru_counter(lru_config);
+        assert_eq!(data_block.get_lru_counter(lru_config), 1);
     }
 }
