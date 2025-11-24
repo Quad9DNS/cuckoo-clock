@@ -45,6 +45,94 @@ impl<H: BuildHasher> CuckooFilter<H> {
         self.configuration.bucket_count
     }
 
+    // TODO: use this to ensure no duplicates - easier than messing up the hot path
+    // Simplify, currently it is just a copy of contains + insert
+    pub fn insert_if_not_present<K: Hash + ?Sized>(&self, key: &K) -> Option<Fingerprint> {
+        let (fp, i1) = self.get_fingerprint_and_index(key);
+
+        let mut contains = self.buckets[i1 as usize]
+            .lock()
+            .expect("mutex poisoned")
+            .contains(&fp, &self.configuration);
+
+        if contains {
+            return None;
+        }
+
+        let i2 = self.alt_index(&fp, i1);
+        contains = self.buckets[i2 as usize]
+            .lock()
+            .expect("mutex poisoned")
+            .contains(&fp, &self.configuration);
+
+        if contains {
+            return None;
+        }
+
+        let inserted = self.buckets[i1 as usize]
+            .lock()
+            .expect("mutex poisoned")
+            .insert(&fp, &self.configuration);
+
+        if inserted {
+            return None;
+        }
+
+        let inserted = self.buckets[i2 as usize]
+            .lock()
+            .expect("mutex poisoned")
+            .insert(&fp, &self.configuration);
+
+        if inserted {
+            return None;
+        }
+
+        let mut cur_index = i1;
+        let mut data = vec![0u8; self.configuration.data_block_size];
+        let mut cur_data_block = DataBlock::from(&mut data[..]);
+        cur_data_block.store_fingerprint(&fp, &self.configuration);
+        if let Some(ttl_config) = &self.configuration.ttl_field_config {
+            cur_data_block.set_ttl(ttl_config, ttl_config.0.ttl.into());
+        }
+        if let Some(lru_config) = &self.configuration.lru_field_config {
+            cur_data_block.inc_lru_counter(lru_config);
+        }
+        for _ in 0..self.configuration.max_kicks {
+            {
+                let mut bucket = self.buckets[cur_index as usize]
+                    .lock()
+                    .expect("mutex poisoned");
+                // Replace a random item first
+                if let Some(lru_config) = self.configuration.lru_field_config.as_ref() {
+                    if !bucket.kick_lru(&mut cur_data_block, &self.configuration, lru_config) {
+                        return Some(cur_data_block.get_fingerprint(&self.configuration));
+                    }
+                } else {
+                    bucket.kick_random(&mut cur_data_block, &self.configuration);
+                }
+                cur_index = self.alt_index(
+                    &cur_data_block.get_fingerprint(&self.configuration),
+                    cur_index,
+                );
+            }
+
+            if self.buckets[cur_index as usize]
+                .lock()
+                .expect("mutex poisoned")
+                .insert(
+                    &cur_data_block.get_fingerprint(&self.configuration),
+                    &self.configuration,
+                )
+            {
+                // Found an alternative spot for evicted item, done with kicks
+                return None;
+            }
+        }
+
+        // Filter is full
+        Some(cur_data_block.get_fingerprint(&self.configuration))
+    }
+
     pub fn insert<K: Hash + ?Sized>(&self, key: &K) -> Option<Fingerprint> {
         let (fp, i1) = self.get_fingerprint_and_index(key);
 
