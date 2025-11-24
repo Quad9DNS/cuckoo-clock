@@ -17,7 +17,7 @@ pub struct Fingerprint {
 }
 
 impl Fingerprint {
-    pub(crate) fn new(hash: u32, mask: u32) -> Self {
+    pub(crate) const fn new(hash: u32, mask: u32) -> Self {
         let mut fingerprint = hash & mask;
         if fingerprint == 0 {
             fingerprint = 1;
@@ -26,15 +26,15 @@ impl Fingerprint {
         Self { data: fingerprint }
     }
 
-    pub(crate) fn new_empty() -> Self {
+    pub(crate) const fn new_empty() -> Self {
         Self { data: 0 }
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
+    pub(crate) const fn is_empty(&self) -> bool {
         self.data == 0
     }
 
-    pub(crate) fn data(&self) -> u32 {
+    pub(crate) const fn data(&self) -> u32 {
         self.data
     }
 
@@ -81,7 +81,7 @@ impl DataBlockFieldConfiguration {
         }
     }
 
-    pub(crate) fn value_mask(&self) -> u32 {
+    pub(crate) const fn value_mask(&self) -> u32 {
         self.in_value_mask
     }
 }

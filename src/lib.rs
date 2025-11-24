@@ -18,6 +18,7 @@
 #![deny(unnecessary_transmutes)]
 #![deny(clippy::transmute_ptr_to_ref)]
 #![deny(clippy::transmute_undefined_repr)]
+#![deny(clippy::missing_const_for_fn)]
 
 pub mod associated_data;
 mod bucket;

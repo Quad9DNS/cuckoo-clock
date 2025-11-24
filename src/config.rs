@@ -16,27 +16,27 @@ pub struct CuckooConfigurationBuilder {
 }
 
 impl CuckooConfigurationBuilder {
-    pub fn fingerprint_bits(&mut self, bits: BitCount) -> &mut Self {
+    pub const fn fingerprint_bits(&mut self, bits: BitCount) -> &mut Self {
         self.fingerprint_bits = bits;
         self
     }
 
-    pub fn bucket_size(&mut self, size: usize) -> &mut Self {
+    pub const fn bucket_size(&mut self, size: usize) -> &mut Self {
         self.bucket_size = size;
         self
     }
 
-    pub fn max_kicks(&mut self, kicks: usize) -> &mut Self {
+    pub const fn max_kicks(&mut self, kicks: usize) -> &mut Self {
         self.max_kicks = kicks;
         self
     }
 
-    pub fn with_lru(&mut self, lru: LruConfig) -> &mut Self {
+    pub const fn with_lru(&mut self, lru: LruConfig) -> &mut Self {
         self.lru = Some(lru);
         self
     }
 
-    pub fn with_ttl(&mut self, ttl: TtlConfig) -> &mut Self {
+    pub const fn with_ttl(&mut self, ttl: TtlConfig) -> &mut Self {
         self.ttl = Some(ttl);
         self
     }
@@ -173,7 +173,7 @@ pub struct CuckooConfiguration {
 
 impl CuckooConfiguration {
     #[must_use]
-    pub fn builder(max_entries: usize) -> CuckooConfigurationBuilder {
+    pub const fn builder(max_entries: usize) -> CuckooConfigurationBuilder {
         CuckooConfigurationBuilder {
             fingerprint_bits: BitCount(8),
             bucket_size: 4,

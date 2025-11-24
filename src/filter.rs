@@ -41,7 +41,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
         }
     }
 
-    pub fn get_bucket_count(&self) -> usize {
+    pub const fn get_bucket_count(&self) -> usize {
         self.configuration.bucket_count
     }
 
