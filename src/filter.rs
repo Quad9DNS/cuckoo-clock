@@ -1,7 +1,7 @@
 use std::{
     hash::{BuildHasher, Hash, RandomState},
     iter::repeat_with,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 use crate::{
@@ -25,10 +25,6 @@ impl CuckooFilter<RandomState> {
     }
 }
 
-// TODO: Update all `mutex posioned` expects
-// We should still use expect, because we shouldn't panic anywhere
-// But make it clearer that that is a bug in the library
-#[allow(clippy::expect_used)]
 impl<H: BuildHasher> CuckooFilter<H> {
     // panics on too large allocations
     pub fn new(configuration: CuckooConfiguration, build_hasher: H) -> Self {
@@ -51,9 +47,8 @@ impl<H: BuildHasher> CuckooFilter<H> {
     pub fn insert_if_not_present<K: Hash + ?Sized>(&self, key: &K) -> Option<Fingerprint> {
         let (fp, i1) = self.get_fingerprint_and_index(key);
 
-        let mut contains = self.buckets[i1 as usize]
-            .lock()
-            .expect("mutex poisoned")
+        let mut contains = self
+            .lock_bucket(i1 as usize)
             .contains(&fp, &self.configuration);
 
         if contains {
@@ -61,27 +56,24 @@ impl<H: BuildHasher> CuckooFilter<H> {
         }
 
         let i2 = self.alt_index(&fp, i1);
-        contains = self.buckets[i2 as usize]
-            .lock()
-            .expect("mutex poisoned")
+        contains = self
+            .lock_bucket(i2 as usize)
             .contains(&fp, &self.configuration);
 
         if contains {
             return None;
         }
 
-        let inserted = self.buckets[i1 as usize]
-            .lock()
-            .expect("mutex poisoned")
+        let inserted = self
+            .lock_bucket(i1 as usize)
             .insert(&fp, &self.configuration);
 
         if inserted {
             return None;
         }
 
-        let inserted = self.buckets[i2 as usize]
-            .lock()
-            .expect("mutex poisoned")
+        let inserted = self
+            .lock_bucket(i2 as usize)
             .insert(&fp, &self.configuration);
 
         if inserted {
@@ -100,9 +92,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
         }
         for _ in 0..self.configuration.max_kicks {
             {
-                let mut bucket = self.buckets[cur_index as usize]
-                    .lock()
-                    .expect("mutex poisoned");
+                let mut bucket = self.lock_bucket(cur_index as usize);
                 // Replace a random item first
                 if let Some(lru_config) = self.configuration.lru_field_config.as_ref() {
                     if !bucket.kick_lru(&mut cur_data_block, &self.configuration, lru_config) {
@@ -117,14 +107,10 @@ impl<H: BuildHasher> CuckooFilter<H> {
                 );
             }
 
-            if self.buckets[cur_index as usize]
-                .lock()
-                .expect("mutex poisoned")
-                .insert(
-                    &cur_data_block.get_fingerprint(&self.configuration),
-                    &self.configuration,
-                )
-            {
+            if self.lock_bucket(cur_index as usize).insert(
+                &cur_data_block.get_fingerprint(&self.configuration),
+                &self.configuration,
+            ) {
                 // Found an alternative spot for evicted item, done with kicks
                 return None;
             }
@@ -137,9 +123,8 @@ impl<H: BuildHasher> CuckooFilter<H> {
     pub fn insert<K: Hash + ?Sized>(&self, key: &K) -> Option<Fingerprint> {
         let (fp, i1) = self.get_fingerprint_and_index(key);
 
-        let inserted = self.buckets[i1 as usize]
-            .lock()
-            .expect("mutex poisoned")
+        let inserted = self
+            .lock_bucket(i1 as usize)
             .insert(&fp, &self.configuration);
 
         if inserted {
@@ -148,9 +133,8 @@ impl<H: BuildHasher> CuckooFilter<H> {
 
         let i2 = self.alt_index(&fp, i1);
 
-        let inserted = self.buckets[i2 as usize]
-            .lock()
-            .expect("mutex poisoned")
+        let inserted = self
+            .lock_bucket(i2 as usize)
             .insert(&fp, &self.configuration);
 
         if inserted {
@@ -169,9 +153,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
         }
         for _ in 0..self.configuration.max_kicks {
             {
-                let mut bucket = self.buckets[cur_index as usize]
-                    .lock()
-                    .expect("mutex poisoned");
+                let mut bucket = self.lock_bucket(cur_index as usize);
                 // Replace a random item first
                 if let Some(lru_config) = self.configuration.lru_field_config.as_ref() {
                     if !bucket.kick_lru(&mut cur_data_block, &self.configuration, lru_config) {
@@ -186,14 +168,10 @@ impl<H: BuildHasher> CuckooFilter<H> {
                 );
             }
 
-            if self.buckets[cur_index as usize]
-                .lock()
-                .expect("mutex poisoned")
-                .insert(
-                    &cur_data_block.get_fingerprint(&self.configuration),
-                    &self.configuration,
-                )
-            {
+            if self.lock_bucket(cur_index as usize).insert(
+                &cur_data_block.get_fingerprint(&self.configuration),
+                &self.configuration,
+            ) {
                 // Found an alternative spot for evicted item, done with kicks
                 return None;
             }
@@ -206,16 +184,14 @@ impl<H: BuildHasher> CuckooFilter<H> {
     pub fn contains<K: Hash + ?Sized>(&self, key: &K) -> bool {
         let (fp, i1) = self.get_fingerprint_and_index(key);
 
-        let mut contains = self.buckets[i1 as usize]
-            .lock()
-            .expect("mutex poisoned")
+        let mut contains = self
+            .lock_bucket(i1 as usize)
             .contains(&fp, &self.configuration);
 
         if !contains {
             let i2 = self.alt_index(&fp, i1);
-            contains = self.buckets[i2 as usize]
-                .lock()
-                .expect("mutex poisoned")
+            contains = self
+                .lock_bucket(i2 as usize)
                 .contains(&fp, &self.configuration);
         }
 
@@ -225,16 +201,14 @@ impl<H: BuildHasher> CuckooFilter<H> {
     pub fn get_associated_data<K: Hash + ?Sized>(&self, key: &K) -> Option<AssociatedData> {
         let (fp, i1) = self.get_fingerprint_and_index(key);
 
-        let mut contains = self.buckets[i1 as usize]
-            .lock()
-            .expect("mutex poisoned")
+        let mut contains = self
+            .lock_bucket(i1 as usize)
             .get_associated_data(&fp, &self.configuration);
 
         if contains.is_none() {
             let i2 = self.alt_index(&fp, i1);
-            contains = self.buckets[i2 as usize]
-                .lock()
-                .expect("mutex poisoned")
+            contains = self
+                .lock_bucket(i2 as usize)
                 .get_associated_data(&fp, &self.configuration);
         }
 
@@ -244,16 +218,14 @@ impl<H: BuildHasher> CuckooFilter<H> {
     pub fn remove<K: Hash + ?Sized>(&self, key: &K) -> bool {
         let (fp, i1) = self.get_fingerprint_and_index(key);
 
-        let mut removed = self.buckets[i1 as usize]
-            .lock()
-            .expect("mutex poisoned")
+        let mut removed = self
+            .lock_bucket(i1 as usize)
             .remove(&fp, &self.configuration);
 
         if !removed {
             let i2 = self.alt_index(&fp, i1);
-            removed = self.buckets[i2 as usize]
-                .lock()
-                .expect("mutex poisoned")
+            removed = self
+                .lock_bucket(i2 as usize)
                 .remove(&fp, &self.configuration);
         }
 
@@ -262,7 +234,8 @@ impl<H: BuildHasher> CuckooFilter<H> {
 
     pub fn full_scan_and_update(&self) {
         for b in self.buckets.iter() {
-            let mut bucket = b.lock().expect("mutex poisoned");
+            #[allow(clippy::unwrap_used)]
+            let mut bucket = b.lock().unwrap();
             if let Some(lru_config) = &self.configuration.lru_field_config {
                 bucket.age_lru_counters(&self.configuration, lru_config);
             }
@@ -302,6 +275,13 @@ impl<H: BuildHasher> CuckooFilter<H> {
 
         (index ^ ((result as u32) & self.configuration.buckets_mask))
             & self.configuration.buckets_mask
+    }
+
+    #[allow(clippy::unwrap_used)]
+    fn lock_bucket(&self, index: usize) -> MutexGuard<'_, Bucket> {
+        // Any panic while lock is held should come from this library
+        // Any panic produced while the lock is held is a bug in the library!
+        self.buckets[index].lock().unwrap()
     }
 }
 

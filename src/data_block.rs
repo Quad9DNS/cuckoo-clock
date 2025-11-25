@@ -26,10 +26,6 @@ impl Fingerprint {
         Self { data: fingerprint }
     }
 
-    pub(crate) const fn new_empty() -> Self {
-        Self { data: 0 }
-    }
-
     pub(crate) const fn is_empty(&self) -> bool {
         self.data == 0
     }
@@ -65,7 +61,8 @@ pub(crate) struct DataBlockFieldConfiguration {
 
 impl DataBlockFieldConfiguration {
     pub(crate) fn new(bits: Range<usize>) -> Self {
-        assert!(bits.len() <= 32);
+        // This should be handled at `BitCount` validation
+        debug_assert!(bits.len() <= 32);
         let start_byte = bits.start / 8; // Round down to take the lower byte
         let end_byte = (bits.end - 1) / 8;
         let bytes = start_byte..=end_byte;
