@@ -400,7 +400,7 @@ mod tests {
         filter.contains(&test_item_3); // Make it more used
 
         let test_item_4 = PredefinedBucketItem((5 << 32) + 2);
-        filter.insert(&test_item_4); // Takes bucket of "test8", but less used
+        filter.insert(&test_item_4); // Takes bucket of "test_item_3", but less used
 
         // Everything fits now
         assert!(filter.contains(&test_item));
@@ -445,7 +445,52 @@ mod tests {
         }
     }
 
-    // TODO: test kicks and how they preserve/insert new data
+    #[test]
+    fn random_kicks() {
+        let filter = CuckooFilter::new(
+            CuckooConfiguration::builder(1000)
+                .bucket_size(2.try_into().unwrap())
+                .build()
+                .unwrap(),
+            TestHasher(0),
+        );
+
+        let test_item = PredefinedBucketItem(2 << 32);
+        filter.insert(&test_item);
+
+        let test_item_2 = PredefinedBucketItem(4 << 32);
+        filter.insert(&test_item_2); // Sharing the same bucket as "test"
+
+        let test_item_3 = PredefinedBucketItem((3 << 32) + 2);
+        filter.insert(&test_item_3); // Another bucket, but also valid for "test" bucket
+
+        let test_item_4 = PredefinedBucketItem((5 << 32) + 2);
+        filter.insert(&test_item_4); // Takes bucket of "test_item_3"
+
+        // This one should not be kicked, because it takes an unrelated bucket
+        let test_item_unrelated = PredefinedBucketItem((10 << 32) + 10);
+        filter.insert(&test_item_unrelated);
+
+        // Everything fits now
+        assert!(filter.contains(&test_item));
+        assert!(filter.contains(&test_item_2));
+        assert!(filter.contains(&test_item_3));
+        assert!(filter.contains(&test_item_4));
+
+        let test_item_5 = PredefinedBucketItem((1 << 32) + 2);
+        // Insert a new item which has to take one of the 2 fully occupied buckets
+        let kicked = filter.insert(&test_item_5);
+        assert!(kicked.is_some(), "An item had to be kicked");
+        assert!(filter.contains(&test_item_5));
+        assert!(filter.contains(&test_item_unrelated));
+
+        for item in [&test_item, &test_item_2, &test_item_3, &test_item_4]
+            .iter()
+            .filter(|i| !kicked.as_ref().unwrap().matches_key(i, &filter))
+        {
+            assert!(filter.contains(item), "Only one item should be kicked");
+        }
+    }
 
     #[test]
     fn full_scan_and_update() {
