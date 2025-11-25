@@ -160,6 +160,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
                         return Some(cur_data_block.get_fingerprint(&self.configuration));
                     }
                 } else {
+                    // TODO: this can even kick the newest item, which is not ideal
                     bucket.kick_random(&mut cur_data_block, &self.configuration);
                 }
                 cur_index = self.alt_index(

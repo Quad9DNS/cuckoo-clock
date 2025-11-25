@@ -69,7 +69,7 @@ impl Bucket {
         let mut min = data_block.get_lru_counter(lru_config);
         if min == 0 {
             // TODO: What happens if LRU is really at 0?
-            min = u8::MAX;
+            min = u32::MAX;
         }
         let mut pos = configuration.bucket_size;
         for i in 0..configuration.bucket_size {
@@ -111,22 +111,17 @@ impl Bucket {
         false
     }
 
+    // NOTE: This doesn't update counters and LRU
     pub(crate) fn get_associated_data(
         &mut self,
         fingerprint: &Fingerprint,
         configuration: &CuckooConfiguration,
     ) -> Option<AssociatedData> {
         for i in 0..configuration.bucket_size {
-            let mut data = self.get_data_block(i, configuration);
+            let data = self.get_data_block(i, configuration);
             let stored = data.get_fingerprint(configuration);
 
             if stored == *fingerprint {
-                if let Some(counter_config) = configuration.counter_field_config.as_ref() {
-                    data.inc_counter(counter_config, 1);
-                }
-                if let Some(lru_config) = configuration.lru_field_config.as_ref() {
-                    data.inc_lru_counter(lru_config);
-                }
                 return Some(AssociatedData::new(
                     self.get_data_block(i, configuration),
                     configuration.clone(),

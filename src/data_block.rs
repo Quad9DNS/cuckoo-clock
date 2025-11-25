@@ -122,8 +122,8 @@ impl<T: Borrow<[u8]>> DataBlock<T> {
     pub(crate) fn get_lru_counter(
         &self,
         configuration: &(LruConfig, DataBlockFieldConfiguration),
-    ) -> u8 {
-        self.load_bits(&configuration.1) as u8
+    ) -> u32 {
+        self.load_bits(&configuration.1)
     }
 
     pub(crate) fn get_counter(
@@ -189,8 +189,8 @@ impl<T: BorrowMut<[u8]>> DataBlock<T> {
         &mut self,
         configuration: &(LruConfig, DataBlockFieldConfiguration),
     ) {
-        let counter = self.load_bits(&configuration.1) as u8;
-        self.store_bits(&configuration.1, (counter >> 1) as u32);
+        let counter = self.load_bits(&configuration.1);
+        self.store_bits(&configuration.1, counter >> 1);
     }
 
     #[allow(clippy::cast_possible_truncation)]
