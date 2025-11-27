@@ -80,7 +80,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
             return None;
         }
 
-        let mut cur_index = i1;
+        let mut cur_index = if rand::random::<bool>() { i1 } else { i2 };
         let mut data = vec![0u8; self.configuration.data_block_size];
         let mut cur_data_block = DataBlock::from(&mut data[..]);
         cur_data_block.store_fingerprint(&fp, &self.configuration);
