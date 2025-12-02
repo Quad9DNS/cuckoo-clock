@@ -1,8 +1,8 @@
 use std::{collections::HashSet, hash::BuildHasher, ops::Range};
 
 use cuckoo_clock::{
+    CuckooFilter,
     config::{CuckooConfiguration, LruConfig, TtlConfig},
-    filter::CuckooFilter,
 };
 
 fn get_words(range: Range<usize>) -> Vec<String> {

@@ -1,6 +1,27 @@
-use std::borrow::Borrow;
+use std::{borrow::Borrow, fmt::Display};
 
 use crate::{config::CuckooConfiguration, data_block::DataBlock};
+
+#[derive(Debug)]
+pub enum AccessError {
+    FeatureNotEnabled(String),
+}
+
+impl Display for AccessError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AccessError::FeatureNotEnabled(feature) => {
+                f.write_str(&format!("Feature ({feature}) not enabled."))
+            }
+        }
+    }
+}
+
+impl std::error::Error for AccessError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        None
+    }
+}
 
 pub struct AssociatedData {
     data: Box<[u8]>,
@@ -25,30 +46,30 @@ impl AssociatedData {
             .data()
     }
 
-    pub fn get_lru_counter(&self) -> crate::Result<u32> {
+    pub fn get_lru_counter(&self) -> Result<u32, AccessError> {
         Ok(DataBlock::from(&self.data[..]).get_lru_counter(
             self.configuration
                 .lru_field_config
                 .as_ref()
-                .ok_or(crate::Error::FeatureNotEnabled("LRU".to_string()))?,
+                .ok_or(AccessError::FeatureNotEnabled("LRU".to_string()))?,
         ))
     }
 
-    pub fn get_counter(&self) -> crate::Result<u32> {
+    pub fn get_counter(&self) -> Result<u32, AccessError> {
         Ok(DataBlock::from(&self.data[..]).get_counter(
             self.configuration
                 .counter_field_config
                 .as_ref()
-                .ok_or(crate::Error::FeatureNotEnabled("Counter".to_string()))?,
+                .ok_or(AccessError::FeatureNotEnabled("Counter".to_string()))?,
         ))
     }
 
-    pub fn get_stored_ttl_value(&self) -> crate::Result<u32> {
+    pub fn get_stored_ttl_value(&self) -> Result<u32, AccessError> {
         Ok(DataBlock::from(&self.data[..]).get_ttl(
             self.configuration
                 .ttl_field_config
                 .as_ref()
-                .ok_or(crate::Error::FeatureNotEnabled("TTL".to_string()))?,
+                .ok_or(AccessError::FeatureNotEnabled("TTL".to_string()))?,
         ))
     }
 }
@@ -97,20 +118,20 @@ mod tests {
         let data_block = DataBlock::from(&data[..]);
         let associated_data = AssociatedData::new(data_block, config);
 
-        let Err(crate::Error::FeatureNotEnabled(feature_name)) =
+        let Err(AccessError::FeatureNotEnabled(feature_name)) =
             associated_data.get_stored_ttl_value()
         else {
             panic!("TTL not enabled error should be returned!");
         };
         assert_eq!(feature_name, "TTL");
 
-        let Err(crate::Error::FeatureNotEnabled(feature_name)) = associated_data.get_lru_counter()
+        let Err(AccessError::FeatureNotEnabled(feature_name)) = associated_data.get_lru_counter()
         else {
             panic!("LRU not enabled error should be returned!");
         };
         assert_eq!(feature_name, "LRU");
 
-        let Err(crate::Error::FeatureNotEnabled(feature_name)) = associated_data.get_counter()
+        let Err(AccessError::FeatureNotEnabled(feature_name)) = associated_data.get_counter()
         else {
             panic!("Counter not enabled error should be returned!");
         };

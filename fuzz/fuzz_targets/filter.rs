@@ -2,11 +2,15 @@
 
 use std::num::{NonZeroU32, NonZeroUsize};
 
-use cuckoo_clock::config::{LruConfig, TtlConfig};
-use cuckoo_clock::{CuckooConfiguration, CuckooFilter};
-use libfuzzer_sys::arbitrary::Arbitrary;
-use libfuzzer_sys::fuzz_target;
-use libfuzzer_sys::{Corpus, arbitrary};
+use cuckoo_clock::{
+    CuckooFilter,
+    config::{CuckooConfiguration, LruConfig, TtlConfig},
+};
+use libfuzzer_sys::{
+    Corpus,
+    arbitrary::{self, Arbitrary},
+    fuzz_target,
+};
 
 #[derive(Debug, Arbitrary)]
 struct LruConf {
@@ -78,7 +82,7 @@ fuzz_target!(|conf: CuckooConf| -> Corpus {
         let data = filter.get_associated_data(insert);
         assert!(data.is_some());
         let data = data.unwrap();
-        let fp = data.get_fingerprint();
+        let _fp = data.get_fingerprint();
         let _ = data.get_stored_ttl_value();
         let _ = data.get_lru_counter();
         let _ = data.get_counter();

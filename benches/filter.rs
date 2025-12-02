@@ -2,8 +2,8 @@ use std::hash::BuildHasher;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use cuckoo_clock::{
+    CuckooFilter,
     config::{CuckooConfiguration, LruConfig, TtlConfig},
-    filter::CuckooFilter,
 };
 
 fn default_configuration() -> CuckooConfiguration {
