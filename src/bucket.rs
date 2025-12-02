@@ -6,18 +6,33 @@ use crate::{
     data_block::{DataBlock, DataBlockFieldConfiguration, Fingerprint},
 };
 
+/// A single bucket in the filter, holding all the fingerprints and their associated data
+/// Everything is stored as a single [`Vec<u8>`], where each fingerprint together with its
+/// associated data is aligned to [`u8`].
 pub(crate) struct Bucket {
     data: Vec<u8>,
 }
 
 impl Bucket {
-    // panics on OOM errors
+    /// Creates a new bucket based on [`CuckooConfiguration`].
+    ///
+    /// ## Panics
+    ///
+    /// Panics on OOM errors (if the requested bucket byte size is too high).
     pub(crate) fn new(configuration: &CuckooConfiguration) -> Self {
         Self {
             data: vec![0; configuration.bucket_byte_size],
         }
     }
 
+    /// Inserts a new fingerprint into this bucket.
+    ///
+    /// Sets TTL to the default value (if enabled), increments both LRU and generic counters by 1
+    /// (if enabled). This is done when the same fingerprint is inserted again, restarting TTL and
+    /// increasing counters.
+    ///
+    /// Returns false if the insertion has failed (if the bucket is fully occupied). In that case,
+    /// alternate bucket should be tried and if that fails too, kicking process should be started.
     pub(crate) fn insert(
         &mut self,
         fingerprint: &Fingerprint,
@@ -51,6 +66,11 @@ impl Bucket {
         false
     }
 
+    /// Kicks a random item from this bucket, by exchaging that [`DataBlock`] with the one
+    /// provided.
+    ///
+    /// This doesn't return. It always succeeds and the kicked item can be found in the provided
+    /// [`DataBlock`].
     pub(crate) fn kick_random<T: BorrowMut<[u8]>>(
         &mut self,
         data_block: &mut DataBlock<T>,
@@ -60,6 +80,13 @@ impl Bucket {
         self.get_data_block(index, configuration).swap(data_block);
     }
 
+    /// Kicks an item from this bucket, based on LRU - kicks out the lowest LRU counter item from
+    /// this bucket, that has lower LRU counter than the new item. If the new item has the lowest
+    /// LRU counter, kick fails and false is returned. For completely new items (LRU counter == 0),
+    /// insertion is guaranteed.
+    ///
+    /// Returns true if any item was kicked. Returns false if no item was kicked and the new item
+    /// was not moved out of [`DataBlock`].
     pub(crate) fn kick_lru<T: BorrowMut<[u8]>>(
         &mut self,
         data_block: &mut DataBlock<T>,
@@ -89,6 +116,11 @@ impl Bucket {
         }
     }
 
+    /// Looks for the fingerprint in this bucket.
+    ///
+    /// If fingerprint is found, its LRU and generic counters are also incremented (if enabled).
+    ///
+    /// Returns true if the fingeprint is stored in this bucket.
     pub(crate) fn contains(
         &mut self,
         fingerprint: &Fingerprint,
@@ -111,7 +143,11 @@ impl Bucket {
         false
     }
 
-    // NOTE: This doesn't update counters and LRU
+    /// Looks for the fingerprint in this bucket and returns its associated data.
+    ///
+    /// NOTE: This doesn't update counters and LRU
+    ///
+    /// Returns the data associated with the fingerprint, if found.
     pub(crate) fn get_associated_data(
         &mut self,
         fingerprint: &Fingerprint,
@@ -131,6 +167,9 @@ impl Bucket {
         None
     }
 
+    /// Removes the fingerprint from this bucket, by clearing out its slot.
+    ///
+    /// Returns true if fingerprint was found and removed, false if it was not found.
     pub(crate) fn remove(
         &mut self,
         fingerprint: &Fingerprint,
@@ -148,15 +187,7 @@ impl Bucket {
         false
     }
 
-    pub(crate) fn get_data_block(
-        &mut self,
-        index: usize,
-        configuration: &CuckooConfiguration,
-    ) -> DataBlock<&mut [u8]> {
-        let size = configuration.data_block_size;
-        (&mut self.data[(index * size)..((index + 1) * size)]).into()
-    }
-
+    /// Ages all LRU counters in this bucket.
     pub(crate) fn age_lru_counters(
         &mut self,
         configuration: &CuckooConfiguration,
@@ -168,6 +199,7 @@ impl Bucket {
         }
     }
 
+    /// Ages all TTL counters in this bucket.
     pub(crate) fn age_ttl_counters(
         &mut self,
         configuration: &CuckooConfiguration,
@@ -177,5 +209,14 @@ impl Bucket {
             self.get_data_block(i, configuration)
                 .age_ttl_counter(ttl_config);
         }
+    }
+
+    fn get_data_block(
+        &mut self,
+        index: usize,
+        configuration: &CuckooConfiguration,
+    ) -> DataBlock<&mut [u8]> {
+        let size = configuration.data_block_size;
+        (&mut self.data[(index * size)..((index + 1) * size)]).into()
     }
 }
