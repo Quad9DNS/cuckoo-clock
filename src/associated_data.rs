@@ -2,8 +2,11 @@ use std::{borrow::Borrow, fmt::Display};
 
 use crate::{config::CuckooConfiguration, data_block::DataBlock};
 
+/// Error type for all [`AssociatedData`] access.
 #[derive(Debug)]
 pub enum AccessError {
+    /// Error due to requesting a field that is available only if a feature is enabled in
+    /// [`crate::config::CuckooConfiguration`]
     FeatureNotEnabled(String),
 }
 
@@ -23,6 +26,37 @@ impl std::error::Error for AccessError {
     }
 }
 
+/// Provides access to data associated with an item in the filter.
+///
+/// All data is associated by a fingerprint, meaning that collisions (false positives) will also
+/// affect the associated data - it might not be related exactly to the requested item, but just to
+/// another item that shared the same fingerprint.
+///
+/// This data is a copy of the data in the filter, meaning it will not be updated when filter data
+/// is changed and can be freely moved around.
+///
+/// # Examples
+///
+/// ```
+/// use cuckoo_clock::{CuckooFilter, config::{CuckooConfiguration, LruConfig, TtlConfig}};
+///
+/// let filter = CuckooFilter::new_random(
+///     CuckooConfiguration::builder(100_000)
+///         .with_lru(LruConfig::default())
+///         .with_ttl(TtlConfig {
+///             ttl: 10.try_into()?,
+///             ttl_bits: 8.try_into()?,
+///         })
+///         .build()?
+/// );
+/// filter.insert("example_data");
+/// let data = filter.get_associated_data("example_data").unwrap();
+///
+/// assert_eq!(data.get_stored_ttl_value()?, 10);
+/// assert_eq!(data.get_lru_counter()?, 1);
+///
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub struct AssociatedData {
     data: Box<[u8]>,
     configuration: CuckooConfiguration,
@@ -39,6 +73,10 @@ impl AssociatedData {
         }
     }
 
+    /// Returns the fingerprint for this item.
+    ///
+    /// Generally fingerprint is not very useful on its own, depending on the hasher used for
+    /// [`crate::CuckooFilter`].
     #[must_use]
     pub fn get_fingerprint(&self) -> u32 {
         DataBlock::from(&self.data[..])
@@ -46,6 +84,7 @@ impl AssociatedData {
             .data()
     }
 
+    /// Returns the LRU counter for this item.
     pub fn get_lru_counter(&self) -> Result<u32, AccessError> {
         Ok(DataBlock::from(&self.data[..]).get_lru_counter(
             self.configuration
@@ -55,6 +94,7 @@ impl AssociatedData {
         ))
     }
 
+    /// Returns the generic counter for this item.
     pub fn get_counter(&self) -> Result<u32, AccessError> {
         Ok(DataBlock::from(&self.data[..]).get_counter(
             self.configuration
@@ -64,6 +104,10 @@ impl AssociatedData {
         ))
     }
 
+    /// Returns the stored TTL value for this item.
+    ///
+    /// This is not a time to live in seconds. This is just a TTL counter, that is decremented by 1
+    /// each time [`crate::CuckooFilter::full_scan_and_update`] is called, until it reaches 0.
     pub fn get_stored_ttl_value(&self) -> Result<u32, AccessError> {
         Ok(DataBlock::from(&self.data[..]).get_ttl(
             self.configuration
