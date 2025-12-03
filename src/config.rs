@@ -106,7 +106,7 @@ impl CuckooConfigurationBuilder {
     /// number of kicks was reached or the kicked item is to be moved in a bucket with all slots
     /// occupied by more used items.
     ///
-    /// When LRU is used, [`crate::CuckooFilter::full_scan_and_update`] should be called
+    /// When LRU is used, [`crate::CuckooFilter::scan_and_update_full`] should be called
     /// periodically, to age LRU for all items. It is up to the caller to schedule this process.
     /// More frequent scans will result in faster aging LRU for all items, requiring item to be
     /// used more frequently to outlive other items.
@@ -117,9 +117,9 @@ impl CuckooConfigurationBuilder {
     }
 
     /// Enables TTL for items in the filter. TTL will be used to expire items from the filter when
-    /// [`crate::CuckooFilter::full_scan_and_update`] is called.
+    /// [`crate::CuckooFilter::scan_and_update_full`] is called.
     ///
-    /// When TTL is used, [`crate::CuckooFilter::full_scan_and_update`] should be called
+    /// When TTL is used, [`crate::CuckooFilter::scan_and_update_full`] should be called
     /// periodically, to age TTL for all items. It is up to the caller to schedule this process.
     /// More frequent scans will result in lower TTL for all items.
     #[must_use]
@@ -277,8 +277,8 @@ impl Default for LruConfig {
 pub struct TtlConfig {
     /// The default TTL counter value for newly inserted items. The actual lifetime duration will
     /// be defined by this value combined with the frequency of calls to
-    /// [`crate::CuckooFilter::full_scan_and_update`]. Each call to
-    /// [`crate::CuckooFilter::full_scan_and_update`] will reduce the counter by 1, until it
+    /// [`crate::CuckooFilter::scan_and_update_full`]. Each call to
+    /// [`crate::CuckooFilter::scan_and_update_full`] will reduce the counter by 1, until it
     /// reaches 0, when the item is removed.
     pub ttl: NonZeroU32,
     /// How many bits are used to represent the TTL counter.

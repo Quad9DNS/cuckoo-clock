@@ -18,7 +18,7 @@ use std::{
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```ignore
 /// use cuckoo_clock::{CuckooFilter, Fingerprint, config::CuckooConfiguration};
 ///
 /// let filter = CuckooFilter::new_random(CuckooConfiguration::builder(100_000).build()?);

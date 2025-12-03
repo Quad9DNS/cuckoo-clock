@@ -107,7 +107,7 @@ impl AssociatedData {
     /// Returns the stored TTL value for this item.
     ///
     /// This is not a time to live in seconds. This is just a TTL counter, that is decremented by 1
-    /// each time [`crate::CuckooFilter::full_scan_and_update`] is called, until it reaches 0.
+    /// each time [`crate::CuckooFilter::scan_and_update_full`] is called, until it reaches 0.
     pub fn get_stored_ttl_value(&self) -> Result<u32, AccessError> {
         Ok(DataBlock::from(&self.data[..]).get_ttl(
             self.configuration

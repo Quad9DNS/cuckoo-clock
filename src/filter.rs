@@ -11,6 +11,69 @@ use crate::{
     data_block::{DataBlock, Fingerprint},
 };
 
+/// Thread-safe cuckoo filter, with support for TTL, LRU and custom counters associated with the
+/// stored data.
+///
+/// Instances of [`CuckooFilter`] can be cloned and used across different threads. To ensure thread
+/// safety, locks are used, but locking is done per bucket, meaning that 2 separate threads can
+/// freely access different buckets without conflicts. In most cases locks shouldn't block, because
+/// optimal cuckoo filter configuration will have a large number of buckets, reducing the change of
+/// concurrent access to the same bucket.
+///
+/// # Examples
+///
+/// Basic cuckoo filter with default configuration
+/// ```
+/// use cuckoo_clock::{CuckooFilter, config::CuckooConfiguration};
+///
+/// let filter = CuckooFilter::new_random(CuckooConfiguration::builder(100_000).build()?);
+///
+/// // None returned from insertion means no entry was evicted
+/// assert!(filter.insert("example_data").is_none());
+///
+/// // Insertion must have been successful
+/// assert!(filter.contains("example_data"));
+///
+/// // Deletion must have been successful
+/// assert!(filter.remove("example_data"));
+/// assert!(!filter.contains("example_data"));
+///
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+///
+/// More complex use-case, with additional options
+/// ```
+/// use cuckoo_clock::{CuckooFilter, config::{CuckooConfiguration, CounterConfig, TtlConfig}};
+///
+/// let filter = CuckooFilter::new_random(
+///     CuckooConfiguration::builder(10_000_000)
+///         .fingerprint_bits(18.try_into()?)
+///         .bucket_size(8.try_into()?)
+///         .with_counter(CounterConfig {
+///             counter_bits: 4.try_into()?
+///         })
+///         .with_ttl(TtlConfig {
+///             ttl: 600.try_into()?,
+///             ttl_bits: 10.try_into()?
+///         })
+///         .build()?
+/// );
+///
+/// // In this case, we use `insert_if_not_present` to ensure no duplicates, because we care about
+/// // the counter
+/// // None returned from insertion means no entry was evicted
+/// assert!(filter.insert_if_not_present("example_data").is_none());
+/// assert!(filter.insert_if_not_present("example_data").is_none());
+///
+/// // Insertion must have been successful
+/// assert!(filter.contains("example_data"));
+///
+/// // Counter should be 3 now, because we accessed this item 3 times
+/// assert_eq!(filter.get_associated_data("example_data").unwrap().get_counter()?, 3);
+///
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+///
 #[derive(Clone)]
 pub struct CuckooFilter<H: BuildHasher> {
     configuration: CuckooConfiguration,
@@ -19,6 +82,11 @@ pub struct CuckooFilter<H: BuildHasher> {
 }
 
 impl CuckooFilter<RandomState> {
+    /// Creates a new instance of [`CuckooFilter`], using [`RandomState`] as its [`BuildHasher`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if allocation of buckets fails (if too much memory was requested)
     #[must_use]
     pub fn new_random(configuration: CuckooConfiguration) -> Self {
         Self::new(configuration, RandomState::new())
@@ -26,7 +94,11 @@ impl CuckooFilter<RandomState> {
 }
 
 impl<H: BuildHasher> CuckooFilter<H> {
-    // panics on too large allocations
+    /// Creates a new instance of [`CuckooFilter`], using provided [`BuildHasher`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if allocation of buckets fails (if too much memory was requested)
     pub fn new(configuration: CuckooConfiguration, build_hasher: H) -> Self {
         Self {
             configuration: configuration.clone(),
@@ -38,12 +110,27 @@ impl<H: BuildHasher> CuckooFilter<H> {
         }
     }
 
+    /// Returns the actual bucket count for this [`CuckooFilter`].
+    ///
+    /// Bucket count is calculated as first next power of two of capacity / bucket_size.
+    /// This means that the actual capacity of the filter is usually bigger than the requested
+    /// capacity.
     pub const fn get_bucket_count(&self) -> usize {
         self.configuration.bucket_count
     }
 
     // TODO: use this to ensure no duplicates - easier than messing up the hot path
     // Simplify, currently it is just a copy of contains + insert
+    /// Inserts a new item into the filter, only if the filter doesn't contain it alrady.
+    ///
+    /// This is slower than [`CuckooFilter::insert`], but it ensures that no duplicates are present
+    /// in the filter. That can be useful when [`AssociatedData`] is used, to ensure consistent
+    /// results.
+    ///
+    /// Returns fingerprint of the item that was evicted from the filter, if eviction had to take
+    /// place to finalize the insertion. It is possible that the item that was just inserted gets
+    /// evicted in random kicking process. That can be confirmed using
+    /// [`Fingerprint::matches_key`].
     pub fn insert_if_not_present<K: Hash + ?Sized>(&self, key: &K) -> Option<Fingerprint> {
         let (fp, i1) = self.get_fingerprint_and_index(key);
 
@@ -120,6 +207,17 @@ impl<H: BuildHasher> CuckooFilter<H> {
         Some(cur_data_block.get_fingerprint(&self.configuration))
     }
 
+    /// Inserts a new item into the filter.
+    ///
+    /// If both target buckets for this item are full, random item is kicked out of one of these 2
+    /// buckets and moved into its alternate bucket, starting a recursive kicking process, which
+    /// stops once an empty slot is found in alternate bucket of a kicked item, or
+    /// [`CuckooConfiguration::max_kicks`] is reached.
+    ///
+    /// Returns fingerprint of the item that was evicted from the filter, if eviction had to take
+    /// place to finalize the insertion. It is possible that the item that was just inserted gets
+    /// evicted in random kicking process. That can be confirmed using
+    /// [`Fingerprint::matches_key`].
     pub fn insert<K: Hash + ?Sized>(&self, key: &K) -> Option<Fingerprint> {
         let (fp, i1) = self.get_fingerprint_and_index(key);
 
@@ -182,6 +280,10 @@ impl<H: BuildHasher> CuckooFilter<H> {
         Some(cur_data_block.get_fingerprint(&self.configuration))
     }
 
+    /// Check if this key is stored in the filter.
+    ///
+    /// Returns true if this key might be present in the filter. If false is returned, then the key
+    /// is definitely not present.
     pub fn contains<K: Hash + ?Sized>(&self, key: &K) -> bool {
         let (fp, i1) = self.get_fingerprint_and_index(key);
 
@@ -199,6 +301,12 @@ impl<H: BuildHasher> CuckooFilter<H> {
         contains
     }
 
+    /// Loads associated data of a key stored in the filter.
+    ///
+    /// Returns None if this filter is not present in the filter. Returns associated data for the
+    /// first item with the fingerprint matching this key's fingerprint. Note that it is
+    /// recommended to use [`CuckooFilter::insert_if_not_present`] if consistent [`AssociatedData`]
+    /// is required.
     pub fn get_associated_data<K: Hash + ?Sized>(&self, key: &K) -> Option<AssociatedData> {
         let (fp, i1) = self.get_fingerprint_and_index(key);
 
@@ -216,6 +324,9 @@ impl<H: BuildHasher> CuckooFilter<H> {
         contains
     }
 
+    /// Removes this key from the filter, if present.
+    ///
+    /// Returns true if the key was present in the filter.
     pub fn remove<K: Hash + ?Sized>(&self, key: &K) -> bool {
         let (fp, i1) = self.get_fingerprint_and_index(key);
 
@@ -233,7 +344,55 @@ impl<H: BuildHasher> CuckooFilter<H> {
         removed
     }
 
-    pub fn full_scan_and_update(&self) {
+    /// Scans all buckets of this filter and reduces TTL and LRU counters.
+    ///
+    /// If LRU and/or TTL features are used, this must be called periodically.
+    /// Each call to this function will age all the LRU and TTL counters. The frequency of calls
+    /// will affect both LRU and TTL in different ways:
+    /// - TTL will get reduced by 1 on each call, meaning that scanning each second indirectly sets
+    ///   the unit of TTL field to be seconds.
+    /// - LRU will get halved on each call. By scanning more frequently, items will require more
+    ///   frequent usage to stay in the filter.
+    ///
+    /// This is a no-op if both LRU and TTL are disabled.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cuckoo_clock::{CuckooFilter, config::{CuckooConfiguration, CounterConfig, TtlConfig}};
+    ///
+    /// let filter = CuckooFilter::new_random(
+    ///     CuckooConfiguration::builder(10_000)
+    ///         .with_ttl(TtlConfig {
+    ///             ttl: 3.try_into()?,
+    ///             ttl_bits: 2.try_into()?
+    ///         })
+    ///         .build()?
+    /// );
+    ///
+    /// filter.insert("example_data");
+    ///
+    /// assert!(filter.contains("example_data"));
+    ///
+    /// filter.scan_and_update_full();
+    /// assert!(filter.contains("example_data"));
+    ///
+    /// filter.scan_and_update_full();
+    /// assert!(filter.contains("example_data"));
+    ///
+    /// // The item will get removed now, due to expired TTL
+    /// filter.scan_and_update_full();
+    /// assert!(!filter.contains("example_data"));
+    ///
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn scan_and_update_full(&self) {
+        if self.configuration.lru_field_config.is_none()
+            && self.configuration.ttl_field_config.is_none()
+        {
+            return;
+        }
+
         for b in self.buckets.iter() {
             #[allow(clippy::unwrap_used)]
             let mut bucket = b.lock().unwrap();
@@ -246,6 +405,47 @@ impl<H: BuildHasher> CuckooFilter<H> {
         }
     }
 
+    /// Scans all buckets of this filter and reduces TTL counters.
+    ///
+    /// Similar to [`CuckooFilter::scan_and_update_full`], but updates only TTL counters. This
+    /// allows more control, enabling different update frequency for TTL and LRU.
+    ///
+    /// This is a no-op if TTL is disabled.
+    pub fn scan_and_update_ttl(&self) {
+        if self.configuration.ttl_field_config.is_none() {
+            return;
+        }
+
+        for b in self.buckets.iter() {
+            #[allow(clippy::unwrap_used)]
+            let mut bucket = b.lock().unwrap();
+            if let Some(ttl_config) = &self.configuration.ttl_field_config {
+                bucket.age_ttl_counters(&self.configuration, ttl_config);
+            }
+        }
+    }
+
+    /// Scans all buckets of this filter and reduces LRU counters.
+    ///
+    /// Similar to [`CuckooFilter::scan_and_update_full`], but updates only LRU counters. This
+    /// allows more control, enabling different update frequency for TTL and LRU.
+    ///
+    /// This is a no-op if LRU is disabled.
+    pub fn scan_and_update_lru(&self) {
+        if self.configuration.lru_field_config.is_none() {
+            return;
+        }
+
+        for b in self.buckets.iter() {
+            #[allow(clippy::unwrap_used)]
+            let mut bucket = b.lock().unwrap();
+            if let Some(lru_config) = &self.configuration.lru_field_config {
+                bucket.age_lru_counters(&self.configuration, lru_config);
+            }
+        }
+    }
+
+    /// Generates the fingerprint and first index for the provided key.
     pub(crate) fn get_fingerprint<K: Hash + ?Sized>(&self, key: &K) -> Fingerprint {
         self.get_fingerprint_and_index(key).0
     }
@@ -474,7 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn full_scan_and_update() {
+    fn scan_and_update_full() {
         let words = get_words(0..100_000);
         let filter = CuckooFilter::new_random(
             CuckooConfiguration::builder(100_000)
@@ -503,7 +703,7 @@ mod tests {
         }
 
         for _ in 0..2 {
-            filter.full_scan_and_update();
+            filter.scan_and_update_full();
         }
         for word in stored_words {
             assert!(
@@ -513,7 +713,7 @@ mod tests {
         }
 
         // TTL should remove all entries now
-        filter.full_scan_and_update();
+        filter.scan_and_update_full();
         for word in &words {
             assert!(
                 !filter.contains(word),

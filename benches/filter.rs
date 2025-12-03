@@ -55,9 +55,9 @@ fn run_scan_and_update_benchmark<H: BuildHasher>(
     group_name: &str,
 ) {
     let mut group = c.benchmark_group(group_name);
-    group.bench_function("full_scan_and_update", |b| {
+    group.bench_function("scan_and_update_full", |b| {
         b.iter(|| {
-            filter.full_scan_and_update();
+            filter.scan_and_update_full();
         })
     });
     group.finish();
