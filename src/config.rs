@@ -222,7 +222,7 @@ impl CuckooConfigurationBuilder {
                 .checked_mul(data_block_size)
                 .ok_or(ConfigError::BucketTooBig)?,
             bucket_count,
-            #[allow(clippy::cast_possible_truncation)]
+            #[expect(clippy::cast_possible_truncation)]
             buckets_mask: (bucket_count - 1) as u32,
         })
     }
@@ -374,7 +374,7 @@ impl CuckooConfiguration {
     pub const fn builder(max_entries: usize) -> CuckooConfigurationBuilder {
         CuckooConfigurationBuilder {
             fingerprint_bits: BitCount(8),
-            #[allow(clippy::expect_used)]
+            #[expect(clippy::expect_used)]
             bucket_size: NonZeroUsize::new(4).expect("4 != 0"),
             max_entries,
             max_kicks: 500,
@@ -464,14 +464,14 @@ impl From<BitCount> for u64 {
 }
 
 impl From<BitCount> for u32 {
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(clippy::cast_possible_truncation)]
     fn from(value: BitCount) -> Self {
         value.0 as u32
     }
 }
 
 impl From<BitCount> for u16 {
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(clippy::cast_possible_truncation)]
     fn from(value: BitCount) -> Self {
         value.0 as u16
     }

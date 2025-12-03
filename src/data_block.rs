@@ -124,7 +124,7 @@ impl DataBlockFieldConfiguration {
             mask: ((1u64 << bits.len()) - 1) << shift,
             // u64 is used to prevent overflow when bits.len() == 32
             // The final value will be at most u32::MAX, since bits.len() is limited to be <= 32
-            #[allow(clippy::cast_possible_truncation)]
+            #[expect(clippy::cast_possible_truncation)]
             in_value_mask: ((1u64 << bits.len()) - 1) as u32,
         }
     }
@@ -159,7 +159,7 @@ impl<T: Borrow<[u8]>> DataBlock<T> {
     }
 
     /// Loads bits defined by the [`DataBlockFieldConfiguration`] and converts them to [`u32`].
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(clippy::cast_possible_truncation)]
     pub(crate) fn load_bits(&self, config: &DataBlockFieldConfiguration) -> u32 {
         let loaded = &self.0.borrow()[config.bytes.clone()];
         let mut loaded_u64 = 0;
@@ -208,7 +208,6 @@ impl<T: BorrowMut<[u8]>> DataBlock<T> {
         for (i, b) in loaded.iter().enumerate() {
             loaded_u64 += (*b as u64) << ((len - (i + 1)) * 8)
         }
-        #[allow(clippy::cast_possible_truncation)]
         let masked_old_value = loaded_u64 & !config.mask;
         let final_value = masked_old_value | ((masked_new_value as u64) << config.shift);
         self.0.borrow_mut()[config.bytes.clone()]
@@ -318,7 +317,7 @@ impl<T: BorrowMut<[u8]>> DataBlock<T> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[expect(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

@@ -394,7 +394,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
         }
 
         for b in self.buckets.iter() {
-            #[allow(clippy::unwrap_used)]
+            #[expect(clippy::unwrap_used)]
             let mut bucket = b.lock().unwrap();
             if let Some(lru_config) = &self.configuration.lru_field_config {
                 bucket.age_lru_counters(&self.configuration, lru_config);
@@ -417,7 +417,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
         }
 
         for b in self.buckets.iter() {
-            #[allow(clippy::unwrap_used)]
+            #[expect(clippy::unwrap_used)]
             let mut bucket = b.lock().unwrap();
             if let Some(ttl_config) = &self.configuration.ttl_field_config {
                 bucket.age_ttl_counters(&self.configuration, ttl_config);
@@ -437,7 +437,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
         }
 
         for b in self.buckets.iter() {
-            #[allow(clippy::unwrap_used)]
+            #[expect(clippy::unwrap_used)]
             let mut bucket = b.lock().unwrap();
             if let Some(lru_config) = &self.configuration.lru_field_config {
                 bucket.age_lru_counters(&self.configuration, lru_config);
@@ -457,7 +457,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
         // We can reduce number of hashes by using one hash as fingerprint and first index
         let fingerprint = (result >> 32) as u32;
         // Intentional truncation here
-        #[allow(clippy::cast_possible_truncation)]
+        #[expect(clippy::cast_possible_truncation)]
         let index = result as u32 & self.configuration.buckets_mask;
 
         (
@@ -470,7 +470,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
     }
 
     // Intentional truncation here
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(clippy::cast_possible_truncation)]
     fn alt_index(&self, fingerprint: &Fingerprint, index: u32) -> u32 {
         let result = self.build_hasher.hash_one(fingerprint);
 
@@ -478,7 +478,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
             & self.configuration.buckets_mask
     }
 
-    #[allow(clippy::unwrap_used)]
+    #[expect(clippy::unwrap_used)]
     fn lock_bucket(&self, index: usize) -> MutexGuard<'_, Bucket> {
         // Any panic while lock is held should come from this library
         // Any panic produced while the lock is held is a bug in the library!
@@ -487,7 +487,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[expect(clippy::unwrap_used)]
 mod tests {
     use std::{collections::HashSet, hash::Hasher, ops::Range};
 
