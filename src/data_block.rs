@@ -1,5 +1,5 @@
 use crate::{
-    config::{CounterConfig, CuckooConfiguration, LruConfig, TtlConfig},
+    config::{BitCount, CounterConfig, CuckooConfiguration, LruConfig, TtlConfig},
     filter::CuckooFilter,
 };
 use std::{
@@ -11,6 +11,27 @@ use std::{
     ops::{Range, RangeInclusive},
 };
 
+/// Represents a fingerprint of an item, stored in the [`crate::CuckooFilter`].
+///
+/// Generally, fingerprint access should not be needed for regular filter usage, but it can be
+/// useful to confirm if the evicted fingerprint matches a known item.
+///
+/// # Examples
+///
+/// ```no_run
+/// use cuckoo_clock::{CuckooFilter, Fingerprint, config::CuckooConfiguration};
+///
+/// let filter = CuckooFilter::new_random(CuckooConfiguration::builder(100_000).build()?);
+///
+/// // ... use filter
+///
+/// if let Some(evicted_fp: Fingerprint) = filter.insert("new_item") {
+///     if evicted_fp.matches_key("known_item", &filter) {
+///         println!("Known item was evicted!");
+///     }
+/// }
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Debug, Hash, Clone, PartialEq, Eq)]
 pub struct Fingerprint {
     data: u32,
@@ -19,6 +40,8 @@ pub struct Fingerprint {
 impl Fingerprint {
     pub(crate) const fn new(hash: u32, mask: u32) -> Self {
         let mut fingerprint = hash & mask;
+        // Since fingerprint 0 represents and empty slot, we just shift it up by 1
+        // This will result in slightly higher collision rate
         if fingerprint == 0 {
             fingerprint = 1;
         }
@@ -26,14 +49,20 @@ impl Fingerprint {
         Self { data: fingerprint }
     }
 
+    /// Returns true if this represents and empty fingerprint (an empty slot).
     pub(crate) const fn is_empty(&self) -> bool {
         self.data == 0
     }
 
+    /// Returns the underlying data.
     pub(crate) const fn data(&self) -> u32 {
         self.data
     }
 
+    /// Compares this fingerprint to a key. This will only produce correct results if the same
+    /// filter that produced this fingerprint is passed into this method.
+    ///
+    /// Returns true if this fingerprint matches the key.
     pub fn matches_key<K: Hash + ?Sized, H: BuildHasher>(
         &self,
         key: &K,
@@ -49,20 +78,42 @@ impl From<u32> for Fingerprint {
     }
 }
 
+/// Configuration for a field in a [`DataBlock`] (a single slot in a bucket).
 #[derive(Clone, Debug)]
 pub(crate) struct DataBlockFieldConfiguration {
+    /// Range of bytes that contain this field.
+    /// Not all bytes are actually exclusive to this field.
+    /// The specific bits that are used for this field are accessed using
+    /// [`DataBlockFieldConfiguration::mask`].
     bytes: RangeInclusive<usize>,
+    /// Mask for this field. When applied to [`DataBlockFieldConfiguration::bytes`] range of bytes
+    /// from the data block, stored field can be retrieved.
     // Mask has to be u64, because even though max value can fit in u32, it can spread over 4 bytes
     // due to layout
     mask: u64,
+    /// Since the field doesn't have to be aligned at byte, shift is used to correct the value
+    /// after masking.
+    ///
+    /// A simplified example using a shorter mask would be:
+    /// mask = 00111100
+    ///
+    /// In this case, shift = 2 and can be used after masking to move masked bits into correct
+    /// position.
     shift: usize,
+    /// Mask for incoming values. Maximum bits is [`BitCount::MAX`] (32), so u32 is big enough.
+    /// This is used to mask incoming values, to ensure they don't overflow into other
+    /// fields when writing into the [`DataBlock`].
     in_value_mask: u32,
 }
 
 impl DataBlockFieldConfiguration {
+    /// Creates a new [`DataBlockFieldConfiguration`] from the range of bits that it takes up. Bit
+    /// indexes start from the beginning of the [`DataBlock`], meaning from the start of the first
+    /// field (which will always be the [`Fingerprint`]). It is limited to
+    /// [`BitCount::MAX`]
     pub(crate) fn new(bits: Range<usize>) -> Self {
         // This should be handled at `BitCount` validation
-        debug_assert!(bits.len() <= 32);
+        debug_assert!(bits.len() <= BitCount::MAX.into());
         let start_byte = bits.start / 8; // Round down to take the lower byte
         let end_byte = (bits.end - 1) / 8;
         let bytes = start_byte..=end_byte;
@@ -78,11 +129,15 @@ impl DataBlockFieldConfiguration {
         }
     }
 
+    /// Mask for incoming values. Maximum bits is [`crate::config::BitCount::MAX`] (32), so u32 is
+    /// big enough. This is used to mask incoming values, to ensure they don't overflow into other
+    /// fields when writing into the [`DataBlock`].
     pub(crate) const fn value_mask(&self) -> u32 {
         self.in_value_mask
     }
 }
 
+/// Simple wrapper for a slot in a bucket. Enables access to the fields stored in the slot.
 pub(crate) struct DataBlock<T: Borrow<[u8]>>(T);
 
 impl<'a> From<&'a mut [u8]> for DataBlock<&'a mut [u8]> {
@@ -98,10 +153,12 @@ impl<'a> From<&'a [u8]> for DataBlock<&'a [u8]> {
 }
 
 impl<T: Borrow<[u8]>> DataBlock<T> {
+    /// Provides read-only access to underlying bytes.
     pub(crate) fn inner(&self) -> &[u8] {
         self.0.borrow()
     }
 
+    /// Loads bits defined by the [`DataBlockFieldConfiguration`] and converts them to [`u32`].
     #[allow(clippy::cast_possible_truncation)]
     pub(crate) fn load_bits(&self, config: &DataBlockFieldConfiguration) -> u32 {
         let loaded = &self.0.borrow()[config.bytes.clone()];
@@ -113,12 +170,13 @@ impl<T: Borrow<[u8]>> DataBlock<T> {
         ((loaded_u64 & config.mask) >> config.shift) as u32
     }
 
+    /// Loads fingerprint based on fingerprint configuration in the [`CuckooConfiguration`].
     pub(crate) fn get_fingerprint(&self, configuration: &CuckooConfiguration) -> Fingerprint {
         self.load_bits(&configuration.fingerprint_field_config)
             .into()
     }
 
-    #[allow(clippy::cast_possible_truncation)]
+    /// Loads LRU based on the provided [`DataBlockFieldConfiguration`].
     pub(crate) fn get_lru_counter(
         &self,
         configuration: &(LruConfig, DataBlockFieldConfiguration),
@@ -126,6 +184,7 @@ impl<T: Borrow<[u8]>> DataBlock<T> {
         self.load_bits(&configuration.1)
     }
 
+    /// Loads generic counter based on the provided [`DataBlockFieldConfiguration`].
     pub(crate) fn get_counter(
         &self,
         configuration: &(CounterConfig, DataBlockFieldConfiguration),
@@ -133,12 +192,14 @@ impl<T: Borrow<[u8]>> DataBlock<T> {
         self.load_bits(&configuration.1)
     }
 
+    /// Loads TTL based on the provided [`DataBlockFieldConfiguration`].
     pub(crate) fn get_ttl(&self, configuration: &(TtlConfig, DataBlockFieldConfiguration)) -> u32 {
         self.load_bits(&configuration.1)
     }
 }
 
 impl<T: BorrowMut<[u8]>> DataBlock<T> {
+    /// Stores the value as bits defined by the [`DataBlockFieldConfiguration`].
     pub(crate) fn store_bits(&mut self, config: &DataBlockFieldConfiguration, value: u32) {
         let masked_new_value = value & config.in_value_mask;
         let loaded = &self.0.borrow()[config.bytes.clone()];
@@ -154,6 +215,7 @@ impl<T: BorrowMut<[u8]>> DataBlock<T> {
             .copy_from_slice(&final_value.to_be_bytes()[(8 - len)..]);
     }
 
+    /// Stores the fingerprint based on fingerprint configuration in the [`CuckooConfiguration`].
     pub(crate) fn store_fingerprint(
         &mut self,
         fingerprint: &Fingerprint,
@@ -162,15 +224,22 @@ impl<T: BorrowMut<[u8]>> DataBlock<T> {
         self.store_bits(&configuration.fingerprint_field_config, fingerprint.data);
     }
 
+    /// Resets this data block by setting all bits to 0.
     pub(crate) fn reset(&mut self) {
         self.0.borrow_mut().fill(0u8);
     }
 
+    /// Swaps this data block with another data block.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the data blocks have different lengths. Both data blocks should come from the
+    /// same filter.
     pub(crate) fn swap<U: BorrowMut<[u8]>>(&mut self, other: &mut DataBlock<U>) {
         self.0.borrow_mut().swap_with_slice(other.0.borrow_mut());
     }
 
-    #[allow(clippy::cast_possible_truncation)]
+    /// Increments the LRU counter, based on the provided [`DataBlockFieldConfiguration`].
     pub(crate) fn inc_lru_counter(
         &mut self,
         configuration: &(LruConfig, DataBlockFieldConfiguration),
@@ -184,7 +253,9 @@ impl<T: BorrowMut<[u8]>> DataBlock<T> {
         self.store_bits(&configuration.1, new_counter);
     }
 
-    #[allow(clippy::cast_possible_truncation)]
+    /// Ages the LRU counter, based on the provided [`DataBlockFieldConfiguration`].
+    ///
+    /// Aging is done by halving the LRU counter value.
     pub(crate) fn age_lru_counter(
         &mut self,
         configuration: &(LruConfig, DataBlockFieldConfiguration),
@@ -193,7 +264,10 @@ impl<T: BorrowMut<[u8]>> DataBlock<T> {
         self.store_bits(&configuration.1, counter >> 1);
     }
 
-    #[allow(clippy::cast_possible_truncation)]
+    /// Ages the TTL counter, based on the provided [`DataBlockFieldConfiguration`] and clears out
+    /// the data if it reaches 0.
+    ///
+    /// Aging is done by reducing the TTL counter by 1.
     pub(crate) fn age_ttl_counter(
         &mut self,
         configuration: &(TtlConfig, DataBlockFieldConfiguration),
@@ -206,6 +280,8 @@ impl<T: BorrowMut<[u8]>> DataBlock<T> {
         }
     }
 
+    /// Increments the generic counter, based on the provided [`DataBlockFieldConfiguration`], by
+    /// the provided value.
     pub(crate) fn inc_counter(
         &mut self,
         configuration: &(CounterConfig, DataBlockFieldConfiguration),
@@ -220,6 +296,8 @@ impl<T: BorrowMut<[u8]>> DataBlock<T> {
         self.store_bits(&configuration.1, new_counter);
     }
 
+    /// Decrements the generic counter, based on the provided [`DataBlockFieldConfiguration`], by
+    /// the provided value.
     pub(crate) fn dec_counter(
         &mut self,
         configuration: &(CounterConfig, DataBlockFieldConfiguration),
@@ -229,6 +307,7 @@ impl<T: BorrowMut<[u8]>> DataBlock<T> {
         self.store_bits(&configuration.1, counter.saturating_sub(by));
     }
 
+    /// Sets the TTL counter, based on the provided [`DataBlockFieldConfiguration`].
     pub(crate) fn set_ttl(
         &mut self,
         configuration: &(TtlConfig, DataBlockFieldConfiguration),
