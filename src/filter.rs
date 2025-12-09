@@ -212,7 +212,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
     /// If both target buckets for this item are full, random item is kicked out of one of these 2
     /// buckets and moved into its alternate bucket, starting a recursive kicking process, which
     /// stops once an empty slot is found in alternate bucket of a kicked item, or
-    /// [`CuckooConfiguration::max_kicks`] is reached.
+    /// [`crate::config::CuckooConfigurationBuilder::max_kicks`] is reached.
     ///
     /// Returns fingerprint of the item that was evicted from the filter, if eviction had to take
     /// place to finalize the insertion. It is possible that the item that was just inserted gets

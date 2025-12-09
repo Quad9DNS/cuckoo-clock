@@ -387,7 +387,7 @@ impl CuckooConfiguration {
 
 /// Number of bits. Used to define sizes of the fields.
 ///
-/// This value is limited by [`BitCount::MIN`] and [`BitCount::Max`] and can only be created using
+/// This value is limited by [`BitCount::MIN`] and [`BitCount::MAX`] and can only be created using
 /// the [`TryFrom`] trait, to ensure the bit count is validated.
 ///
 /// # Examples
