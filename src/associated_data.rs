@@ -6,7 +6,7 @@ use crate::{config::CuckooConfiguration, data_block::DataBlock};
 #[derive(Debug)]
 pub enum AccessError {
     /// Error due to requesting a field that is available only if a feature is enabled in
-    /// [`crate::config::CuckooConfiguration`]
+    /// [`crate::config::CuckooConfiguration`].
     FeatureNotEnabled(String),
 }
 

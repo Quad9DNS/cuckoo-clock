@@ -86,7 +86,7 @@ impl CuckooFilter<RandomState> {
     ///
     /// # Panics
     ///
-    /// Panics if allocation of buckets fails (if too much memory was requested)
+    /// Panics if allocation of buckets fails (if too much memory was requested).
     #[must_use]
     pub fn new_random(configuration: CuckooConfiguration) -> Self {
         Self::new(configuration, RandomState::new())
@@ -98,7 +98,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
     ///
     /// # Panics
     ///
-    /// Panics if allocation of buckets fails (if too much memory was requested)
+    /// Panics if allocation of buckets fails (if too much memory was requested).
     pub fn new(configuration: CuckooConfiguration, build_hasher: H) -> Self {
         Self {
             configuration: configuration.clone(),

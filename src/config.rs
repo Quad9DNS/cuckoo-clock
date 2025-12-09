@@ -47,7 +47,7 @@ impl std::error::Error for ConfigError {
 
 /// Builder for [`CuckooConfiguration`].
 ///
-/// New instance can be created using [`CuckooConfiguration::builder`]
+/// New instance can be created using [`CuckooConfiguration::builder`].
 ///
 /// # Examples
 ///
@@ -244,7 +244,7 @@ impl CuckooConfigurationBuilder {
 /// ```
 #[derive(Clone, Debug)]
 pub struct LruConfig {
-    /// How many bits are used to represent the LRU counter.
+    /// Number of bits used to represent the LRU counter.
     /// Larger bit counts allow more values to be represented, allowing items to "accumulate"
     /// higher use counts, which will take longer to age.
     pub counter_bits: BitCount,
@@ -281,7 +281,7 @@ pub struct TtlConfig {
     /// [`crate::CuckooFilter::scan_and_update_full`] will reduce the counter by 1, until it
     /// reaches 0, when the item is removed.
     pub ttl: NonZeroU32,
-    /// How many bits are used to represent the TTL counter.
+    /// Number of bits used to represent the TTL counter.
     /// Larget bit counts allow higher TTL to be represented.
     pub ttl_bits: BitCount,
 }

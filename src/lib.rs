@@ -1,9 +1,9 @@
 //! This crate provides a thread-safe, extended version of [Cuckoo filter], supporting TTL, LRU and
 //! custom counters associated with stored data.
 //!
-//! All the limitations of original Cuckoo filter still hold, meaning that all associated data is
-//! associated with fingerprint, which may represent a completely different item. For that reason,
-//! it is recommended to only use associated data to manage lifetime of the items, unless false
+//! All the limitations of original Cuckoo filter still hold, meaning that all additional data is
+//! associated with the fingerprint, which may represent a completely different item. For that reason,
+//! it is recommended to only use associated data to manage the lifetime of the items, unless false
 //! positives are not problematic in your use-case.
 //!
 //! This implementation can be used as a regular Cuckoo filter, without the added features too.
