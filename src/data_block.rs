@@ -185,7 +185,7 @@ impl<T: Borrow<[u8]>> DataBlock<T> {
     }
 
     /// Loads generic counter based on the provided [`DataBlockFieldConfiguration`].
-    pub(crate) fn get_counter(
+    pub(crate) fn get_custom_data(
         &self,
         configuration: &(CustomDataConfig, DataBlockFieldConfiguration),
     ) -> u32 {

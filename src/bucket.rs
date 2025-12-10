@@ -127,17 +127,11 @@ impl Bucket {
         fingerprint: &Fingerprint,
         configuration: &CuckooConfiguration,
     ) -> bool {
-        if let Some(mut data) = self.get_associated_data(fingerprint, configuration) {
-            // Ignore the error, we just want to increment if the feature is enabled
-            let _ = data.inc_lru_counter();
-            return true;
-        }
-        false
+        self.get_associated_data(fingerprint, configuration)
+            .is_some()
     }
 
     /// Looks for the fingerprint in this bucket and returns its associated data.
-    ///
-    /// NOTE: This doesn't update counters and LRU
     ///
     /// Returns the data associated with the fingerprint, if found.
     pub(crate) fn get_associated_data(
@@ -146,10 +140,13 @@ impl Bucket {
         configuration: &CuckooConfiguration,
     ) -> Option<AssociatedDataMut<'_>> {
         for i in 0..configuration.bucket_size {
-            let data = self.get_data_block(i, configuration);
+            let mut data = self.get_data_block(i, configuration);
             let stored = data.get_fingerprint(configuration);
 
             if stored == *fingerprint {
+                if let Some(lru) = &configuration.lru_field_config {
+                    data.inc_lru_counter(lru);
+                }
                 return Some(AssociatedDataMut::new(
                     self.get_data_block(i, configuration),
                     configuration.clone(),

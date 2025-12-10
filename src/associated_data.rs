@@ -86,7 +86,7 @@ impl AssociatedData {
 
     /// Returns the custom data for this item.
     pub fn get_custom(&self) -> Result<u32, AccessError> {
-        Ok(DataBlock::from(&self.data[..]).get_counter(
+        Ok(DataBlock::from(&self.data[..]).get_custom_data(
             self.configuration
                 .custom_field_config
                 .as_ref()
@@ -161,13 +161,17 @@ impl<'a> AssociatedDataMut<'a> {
         }
     }
 
-    /// Sets the LRU counter for this item.
-    pub(crate) fn inc_lru_counter(&mut self) -> Result<(), AccessError> {
-        self.data.inc_lru_counter(
+    /// Modifies the custom data for this item.
+    pub fn modify_custom_data(
+        &mut self,
+        modification: impl Fn(u32) -> u32,
+    ) -> Result<(), AccessError> {
+        self.data.modify_custom_data(
             self.configuration
-                .lru_field_config
+                .custom_field_config
                 .as_ref()
-                .ok_or(AccessError::FeatureNotEnabled("LRU".to_string()))?,
+                .ok_or(AccessError::FeatureNotEnabled("Custom".to_string()))?,
+            modification,
         );
         Ok(())
     }

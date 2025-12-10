@@ -128,12 +128,16 @@ impl<H: BuildHasher> CuckooFilter<H> {
     /// This updates the LRU counter.
     ///
     /// Returns true if the item was present.
-    pub fn check_and_modify<K: Hash + ?Sized>(
+    pub fn modify_and_get<K: Hash + ?Sized>(
         &self,
         key: &K,
-        modification: impl Fn(AssociatedDataMut<'_>),
-    ) -> bool {
-        self.modify_or_get_indices(key, &modification).is_none()
+        modification: impl Fn(&mut AssociatedDataMut<'_>),
+    ) -> Option<AssociatedData> {
+        if let DataOrIndices::Data(data) = self.modify_or_get_indices(key, &modification) {
+            Some(data)
+        } else {
+            None
+        }
     }
 
     /// Inserts a new item into the filter, only if the filter doesn't contain it alrady.
@@ -154,9 +158,12 @@ impl<H: BuildHasher> CuckooFilter<H> {
     pub fn insert_if_not_present<K: Hash + ?Sized>(
         &self,
         key: &K,
-        modification: impl Fn(AssociatedDataMut<'_>),
+        modification: impl Fn(&mut AssociatedDataMut<'_>),
     ) -> Option<Fingerprint> {
-        let (fp, i1, i2) = self.modify_or_get_indices(key, &modification)?;
+        let DataOrIndices::Indices(fp, i1, i2) = self.modify_or_get_indices(key, &modification)
+        else {
+            return None;
+        };
 
         let mut data = vec![0u8; self.configuration.data_block_size];
         let mut cur_data_block = DataBlock::from(&mut data[..]);
@@ -185,7 +192,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
         if let Some(lru_config) = &self.configuration.lru_field_config {
             cur_data_block.inc_lru_counter(lru_config);
         }
-        modification(AssociatedDataMut::new(
+        modification(&mut AssociatedDataMut::new(
             cur_data_block,
             self.configuration.clone(),
         ));
@@ -467,17 +474,16 @@ impl<H: BuildHasher> CuckooFilter<H> {
     fn modify_or_get_indices<K: Hash + ?Sized>(
         &self,
         key: &K,
-        modification: &impl Fn(AssociatedDataMut<'_>),
-    ) -> Option<(Fingerprint, u32, u32)> {
+        modification: &impl Fn(&mut AssociatedDataMut<'_>),
+    ) -> DataOrIndices {
         let (fp, i1) = self.get_fingerprint_and_index(key);
 
         let mut lock = self.lock_bucket(i1 as usize);
         let mut associated_data = lock.get_associated_data(&fp, &self.configuration);
 
         if let Some(mut data) = associated_data {
-            let _ = data.inc_lru_counter();
-            modification(data);
-            return None;
+            modification(&mut data);
+            return DataOrIndices::Data(data.read());
         }
 
         let i2 = self.alt_index(&fp, i1);
@@ -485,12 +491,11 @@ impl<H: BuildHasher> CuckooFilter<H> {
         associated_data = lock.get_associated_data(&fp, &self.configuration);
 
         if let Some(mut data) = associated_data {
-            let _ = data.inc_lru_counter();
-            modification(data);
-            return None;
+            modification(&mut data);
+            return DataOrIndices::Data(data.read());
         }
 
-        Some((fp, i1, i2))
+        DataOrIndices::Indices(fp, i1, i2)
     }
 
     fn get_fingerprint_and_index<K: Hash + ?Sized>(&self, key: &K) -> (Fingerprint, u32) {
@@ -527,6 +532,11 @@ impl<H: BuildHasher> CuckooFilter<H> {
         // Any panic produced while the lock is held is a bug in the library!
         self.buckets[index].lock().unwrap()
     }
+}
+
+enum DataOrIndices {
+    Data(AssociatedData),
+    Indices(Fingerprint, u32, u32),
 }
 
 #[cfg(test)]
