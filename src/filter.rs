@@ -5,6 +5,7 @@ use std::{
 };
 
 use crate::{
+    AssociatedDataMut,
     associated_data::AssociatedData,
     bucket::Bucket,
     config::CuckooConfiguration,
@@ -43,14 +44,14 @@ use crate::{
 ///
 /// More complex use-case, with additional options
 /// ```
-/// use cuckoo_clock::{CuckooFilter, config::{CuckooConfiguration, CounterConfig, TtlConfig}};
+/// use cuckoo_clock::{CuckooFilter, config::{CuckooConfiguration, CustomDataConfig, TtlConfig}};
 ///
 /// let filter = CuckooFilter::new_random(
 ///     CuckooConfiguration::builder(10_000_000)
 ///         .fingerprint_bits(18.try_into()?)
 ///         .bucket_size(8.try_into()?)
-///         .with_counter(CounterConfig {
-///             counter_bits: 4.try_into()?
+///         .with_custom(CustomDataConfig {
+///             bits: 4.try_into()?
 ///         })
 ///         .with_ttl(TtlConfig {
 ///             ttl: 600.try_into()?,
@@ -60,10 +61,10 @@ use crate::{
 /// );
 ///
 /// // In this case, we use `insert_if_not_present` to ensure no duplicates, because we care about
-/// // the counter
+/// // the counter.
 /// // None returned from insertion means no entry was evicted
-/// assert!(filter.insert_if_not_present("example_data").is_none());
-/// assert!(filter.insert_if_not_present("example_data").is_none());
+/// assert!(filter.insert_if_not_present("example_data", |_| {}).is_none());
+/// assert!(filter.insert_if_not_present("example_data", |_| {}).is_none());
 ///
 /// // Insertion must have been successful
 /// assert!(filter.contains("example_data"));
@@ -119,64 +120,76 @@ impl<H: BuildHasher> CuckooFilter<H> {
         self.configuration.bucket_count
     }
 
-    // TODO: use this to ensure no duplicates - easier than messing up the hot path
-    // Simplify, currently it is just a copy of contains + insert
+    /// Checks if an item is present and modifies it.
+    ///
+    /// Use [`Self::contains`] if you just need to check if an item is present. This is useful if
+    /// you are using associated data and wish to control it.
+    ///
+    /// This updates the LRU counter.
+    ///
+    /// Returns true if the item was present.
+    pub fn check_and_modify<K: Hash + ?Sized>(
+        &self,
+        key: &K,
+        modification: impl Fn(AssociatedDataMut<'_>),
+    ) -> bool {
+        self.modify_or_get_indices(key, &modification).is_none()
+    }
+
     /// Inserts a new item into the filter, only if the filter doesn't contain it alrady.
     ///
     /// This is slower than [`CuckooFilter::insert`], but it ensures that no duplicates are present
     /// in the filter. That can be useful when [`AssociatedData`] is used, to ensure consistent
     /// results.
     ///
+    /// This also runs the provided modification - if it exists or if it is newly inserted.
+    ///
+    /// This updates the LRU counter.
+    ///
     /// Returns fingerprint of the item that was evicted from the filter, if eviction had to take
     /// place to finalize the insertion. It is possible that the item that was just inserted gets
     /// evicted in random kicking process. That can be confirmed using
     /// [`Fingerprint::matches_key`].
-    pub fn insert_if_not_present<K: Hash + ?Sized>(&self, key: &K) -> Option<Fingerprint> {
-        let (fp, i1) = self.get_fingerprint_and_index(key);
+    #[must_use]
+    pub fn insert_if_not_present<K: Hash + ?Sized>(
+        &self,
+        key: &K,
+        modification: impl Fn(AssociatedDataMut<'_>),
+    ) -> Option<Fingerprint> {
+        let (fp, i1, i2) = self.modify_or_get_indices(key, &modification)?;
 
-        let mut contains = self
-            .lock_bucket(i1 as usize)
-            .contains(&fp, &self.configuration);
+        let mut data = vec![0u8; self.configuration.data_block_size];
+        let mut cur_data_block = DataBlock::from(&mut data[..]);
+        cur_data_block.store_fingerprint(&fp, &self.configuration);
 
-        if contains {
-            return None;
-        }
-
-        let i2 = self.alt_index(&fp, i1);
-        contains = self
-            .lock_bucket(i2 as usize)
-            .contains(&fp, &self.configuration);
-
-        if contains {
-            return None;
-        }
-
-        let inserted = self
-            .lock_bucket(i1 as usize)
-            .insert(&fp, &self.configuration);
+        let inserted =
+            self.lock_bucket(i1 as usize)
+                .insert(&cur_data_block, &self.configuration, true);
 
         if inserted {
             return None;
         }
 
-        let inserted = self
-            .lock_bucket(i2 as usize)
-            .insert(&fp, &self.configuration);
+        let inserted =
+            self.lock_bucket(i2 as usize)
+                .insert(&cur_data_block, &self.configuration, true);
 
         if inserted {
             return None;
         }
 
         let mut cur_index = if rand::random::<bool>() { i1 } else { i2 };
-        let mut data = vec![0u8; self.configuration.data_block_size];
-        let mut cur_data_block = DataBlock::from(&mut data[..]);
-        cur_data_block.store_fingerprint(&fp, &self.configuration);
         if let Some(ttl_config) = &self.configuration.ttl_field_config {
             cur_data_block.set_ttl(ttl_config, ttl_config.0.ttl.into());
         }
         if let Some(lru_config) = &self.configuration.lru_field_config {
             cur_data_block.inc_lru_counter(lru_config);
         }
+        modification(AssociatedDataMut::new(
+            cur_data_block,
+            self.configuration.clone(),
+        ));
+        let mut cur_data_block = DataBlock::from(&mut data[..]);
         for _ in 0..self.configuration.max_kicks {
             {
                 let mut bucket = self.lock_bucket(cur_index as usize);
@@ -195,8 +208,9 @@ impl<H: BuildHasher> CuckooFilter<H> {
             }
 
             if self.lock_bucket(cur_index as usize).insert(
-                &cur_data_block.get_fingerprint(&self.configuration),
+                &cur_data_block,
                 &self.configuration,
+                false,
             ) {
                 // Found an alternative spot for evicted item, done with kicks
                 return None;
@@ -220,10 +234,13 @@ impl<H: BuildHasher> CuckooFilter<H> {
     /// [`Fingerprint::matches_key`].
     pub fn insert<K: Hash + ?Sized>(&self, key: &K) -> Option<Fingerprint> {
         let (fp, i1) = self.get_fingerprint_and_index(key);
+        let mut data = vec![0u8; self.configuration.data_block_size];
+        let mut cur_data_block = DataBlock::from(&mut data[..]);
+        cur_data_block.store_fingerprint(&fp, &self.configuration);
 
-        let inserted = self
-            .lock_bucket(i1 as usize)
-            .insert(&fp, &self.configuration);
+        let inserted =
+            self.lock_bucket(i1 as usize)
+                .insert(&cur_data_block, &self.configuration, true);
 
         if inserted {
             return None;
@@ -231,18 +248,15 @@ impl<H: BuildHasher> CuckooFilter<H> {
 
         let i2 = self.alt_index(&fp, i1);
 
-        let inserted = self
-            .lock_bucket(i2 as usize)
-            .insert(&fp, &self.configuration);
+        let inserted =
+            self.lock_bucket(i2 as usize)
+                .insert(&cur_data_block, &self.configuration, true);
 
         if inserted {
             return None;
         }
 
         let mut cur_index = i1;
-        let mut data = vec![0u8; self.configuration.data_block_size];
-        let mut cur_data_block = DataBlock::from(&mut data[..]);
-        cur_data_block.store_fingerprint(&fp, &self.configuration);
         if let Some(ttl_config) = &self.configuration.ttl_field_config {
             cur_data_block.set_ttl(ttl_config, ttl_config.0.ttl.into());
         }
@@ -268,8 +282,9 @@ impl<H: BuildHasher> CuckooFilter<H> {
             }
 
             if self.lock_bucket(cur_index as usize).insert(
-                &cur_data_block.get_fingerprint(&self.configuration),
+                &cur_data_block,
                 &self.configuration,
+                false,
             ) {
                 // Found an alternative spot for evicted item, done with kicks
                 return None;
@@ -310,18 +325,15 @@ impl<H: BuildHasher> CuckooFilter<H> {
     pub fn get_associated_data<K: Hash + ?Sized>(&self, key: &K) -> Option<AssociatedData> {
         let (fp, i1) = self.get_fingerprint_and_index(key);
 
-        let mut contains = self
-            .lock_bucket(i1 as usize)
-            .get_associated_data(&fp, &self.configuration);
+        let mut lock = self.lock_bucket(i1 as usize);
+        let contains = lock.get_associated_data(&fp, &self.configuration);
 
-        if contains.is_none() {
+        contains.map(|c| c.read()).or_else(|| {
             let i2 = self.alt_index(&fp, i1);
-            contains = self
-                .lock_bucket(i2 as usize)
-                .get_associated_data(&fp, &self.configuration);
-        }
-
-        contains
+            let mut lock = self.lock_bucket(i2 as usize);
+            lock.get_associated_data(&fp, &self.configuration)
+                .map(|c| c.read())
+        })
     }
 
     /// Removes this key from the filter, if present.
@@ -448,6 +460,37 @@ impl<H: BuildHasher> CuckooFilter<H> {
     /// Generates the fingerprint and first index for the provided key.
     pub(crate) fn get_fingerprint<K: Hash + ?Sized>(&self, key: &K) -> Fingerprint {
         self.get_fingerprint_and_index(key).0
+    }
+
+    /// Returns indices if the item was not found. If item was found, runs the provided
+    /// modification and retruns [`None`].
+    fn modify_or_get_indices<K: Hash + ?Sized>(
+        &self,
+        key: &K,
+        modification: &impl Fn(AssociatedDataMut<'_>),
+    ) -> Option<(Fingerprint, u32, u32)> {
+        let (fp, i1) = self.get_fingerprint_and_index(key);
+
+        let mut lock = self.lock_bucket(i1 as usize);
+        let mut associated_data = lock.get_associated_data(&fp, &self.configuration);
+
+        if let Some(mut data) = associated_data {
+            let _ = data.inc_lru_counter();
+            modification(data);
+            return None;
+        }
+
+        let i2 = self.alt_index(&fp, i1);
+        let mut lock = self.lock_bucket(i2 as usize);
+        associated_data = lock.get_associated_data(&fp, &self.configuration);
+
+        if let Some(mut data) = associated_data {
+            let _ = data.inc_lru_counter();
+            modification(data);
+            return None;
+        }
+
+        Some((fp, i1, i2))
     }
 
     fn get_fingerprint_and_index<K: Hash + ?Sized>(&self, key: &K) -> (Fingerprint, u32) {
@@ -610,6 +653,76 @@ mod tests {
     }
 
     #[test]
+    fn lru_insertion_check_before_insert() {
+        let filter = CuckooFilter::new(
+            CuckooConfiguration::builder(1000)
+                .bucket_size(2.try_into().unwrap())
+                .max_kicks(1)
+                .with_lru(LruConfig {
+                    counter_bits: 8.try_into().unwrap(),
+                })
+                .build()
+                .unwrap(),
+            TestHasher(0),
+        );
+
+        let test_item = PredefinedBucketItem(2 << 32);
+        filter.insert(&test_item);
+        for _ in 0..5 {
+            filter.contains(&test_item); // Make it more used than others
+        }
+
+        let test_item_2 = PredefinedBucketItem(4 << 32);
+        filter.insert(&test_item_2); // Sharing the same bucket as "test", but less used
+        filter.contains(&test_item_2);
+        filter.contains(&test_item_2);
+        assert_eq!(
+            filter
+                .get_associated_data(&test_item_2)
+                .unwrap()
+                .get_lru_counter()
+                .unwrap(),
+            3
+        );
+
+        let test_item_3 = PredefinedBucketItem((3 << 32) + 2);
+        filter.insert(&test_item_3); // Another bucket, but also valid for "test" bucket
+        filter.contains(&test_item_3); // Make it more used
+
+        let test_item_4 = PredefinedBucketItem((5 << 32) + 2);
+        filter.insert(&test_item_4); // Takes bucket of "test_item_3", but less used
+
+        // Everything fits now
+        assert!(filter.contains(&test_item));
+        assert!(filter.contains(&test_item_2));
+        assert!(filter.contains(&test_item_3));
+        assert!(filter.contains(&test_item_4));
+
+        let test_item_5 = PredefinedBucketItem((1 << 32) + 2);
+        // Insert a new item which has to take one of the 2 fully occupied buckets
+        filter.insert(&test_item_5);
+
+        assert!(filter.contains(&test_item_2));
+        assert!(filter.contains(&test_item));
+        assert!(filter.contains(&test_item_3));
+
+        assert!(
+            !filter.contains(&test_item_5) || !filter.contains(&test_item_4),
+            "No inserted items are missing, but filter can't hold them all"
+        );
+
+        filter.insert(&test_item_2);
+        assert_eq!(
+            filter
+                .get_associated_data(&test_item_2)
+                .unwrap()
+                .get_lru_counter()
+                .unwrap(),
+            2
+        );
+    }
+
+    #[test]
     fn alt_index() {
         let words = get_words(0..200_000);
         let filter = CuckooFilter::new_random(
@@ -626,6 +739,8 @@ mod tests {
         }
     }
 
+    // TODO: this test seems to be flaky
+    // Review and fix
     #[test]
     fn random_kicks() {
         let filter = CuckooFilter::new(

@@ -62,7 +62,7 @@ pub struct CuckooConfigurationBuilder {
     pub(crate) max_kicks: usize,
     pub(crate) lru: Option<LruConfig>,
     pub(crate) ttl: Option<TtlConfig>,
-    pub(crate) counter: Option<CounterConfig>,
+    pub(crate) custom: Option<CustomDataConfig>,
 }
 
 impl CuckooConfigurationBuilder {
@@ -128,12 +128,11 @@ impl CuckooConfigurationBuilder {
         self
     }
 
-    /// Enables counter for items in the filter. Counter is just provided as a value that can be
-    /// read when accessing items. It is increased on every access (and can be controlled
-    /// directly).
+    /// Enables custom data for items in the filter. Custom data can be controlled directly on each
+    /// access or insert, but only using [`crate::CuckooFilter::insert_if_not_present`].
     #[must_use]
-    pub const fn with_counter(mut self, counter: CounterConfig) -> Self {
-        self.counter = Some(counter);
+    pub const fn with_custom(mut self, custom: CustomDataConfig) -> Self {
+        self.custom = Some(custom);
         self
     }
 
@@ -168,8 +167,8 @@ impl CuckooConfigurationBuilder {
         if let Some(TtlConfig { ttl_bits, .. }) = self.ttl {
             data_block_size += *ttl_bits;
         }
-        if let Some(CounterConfig { counter_bits, .. }) = self.counter {
-            data_block_size += *counter_bits;
+        if let Some(CustomDataConfig { bits: size }) = self.custom {
+            data_block_size += *size;
         }
         data_block_size = data_block_size.div_ceil(8);
         Ok(CuckooConfiguration {
@@ -201,17 +200,13 @@ impl CuckooConfigurationBuilder {
                     ),
                 )
             }),
-            counter_field_config: self.counter.clone().map(|counter| {
+            custom_field_config: self.custom.clone().map(|custom| {
                 (
-                    counter,
+                    custom,
                     DataBlockFieldConfiguration::new(
                         counter_start
                             ..counter_start
-                                + *self
-                                    .counter
-                                    .as_ref()
-                                    .map(|c| c.counter_bits)
-                                    .unwrap_or(BitCount(0)),
+                                + *self.custom.as_ref().map(|c| c.bits).unwrap_or(BitCount(0)),
                     ),
                 )
             }),
@@ -301,18 +296,9 @@ pub struct TtlConfig {
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 #[derive(Clone, Debug)]
-pub struct CounterConfig {
-    /// How many bits are used to represent the generic counter.
-    /// Larget bit counts allow higher counter values to be represented.
-    pub counter_bits: BitCount,
-}
-
-impl Default for CounterConfig {
-    fn default() -> Self {
-        Self {
-            counter_bits: BitCount(8),
-        }
-    }
+pub struct CustomDataConfig {
+    /// How many bits are used to represent the custom data.
+    pub bits: BitCount,
 }
 
 /// Configuration for the [`crate::CuckooFilter`].
@@ -359,7 +345,7 @@ pub struct CuckooConfiguration {
 
     pub(crate) fingerprint_field_config: DataBlockFieldConfiguration,
     pub(crate) lru_field_config: Option<(LruConfig, DataBlockFieldConfiguration)>,
-    pub(crate) counter_field_config: Option<(CounterConfig, DataBlockFieldConfiguration)>,
+    pub(crate) custom_field_config: Option<(CustomDataConfig, DataBlockFieldConfiguration)>,
     pub(crate) ttl_field_config: Option<(TtlConfig, DataBlockFieldConfiguration)>,
     pub(crate) data_block_size: usize,
     pub(crate) bucket_byte_size: usize,
@@ -380,7 +366,7 @@ impl CuckooConfiguration {
             max_kicks: 500,
             lru: None,
             ttl: None,
-            counter: None,
+            custom: None,
         }
     }
 }

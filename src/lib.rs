@@ -39,4 +39,8 @@ pub mod config;
 mod data_block;
 mod filter;
 
-pub use {associated_data::AssociatedData, data_block::Fingerprint, filter::CuckooFilter};
+pub use {
+    associated_data::{AssociatedData, AssociatedDataMut},
+    data_block::Fingerprint,
+    filter::CuckooFilter,
+};

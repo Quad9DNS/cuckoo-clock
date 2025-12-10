@@ -28,7 +28,7 @@ fn run_insertion_benchmark<H: BuildHasher>(
     group.bench_function("insert_if_not_present", |b| {
         b.iter(|| {
             items.iter().for_each(|item| {
-                let _ = filter.insert_if_not_present(item);
+                let _ = filter.insert_if_not_present(item, |_| {});
             })
         })
     });

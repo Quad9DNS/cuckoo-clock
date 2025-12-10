@@ -1,5 +1,5 @@
 use crate::{
-    config::{BitCount, CounterConfig, CuckooConfiguration, LruConfig, TtlConfig},
+    config::{BitCount, CuckooConfiguration, CustomDataConfig, LruConfig, TtlConfig},
     filter::CuckooFilter,
 };
 use std::{
@@ -187,7 +187,7 @@ impl<T: Borrow<[u8]>> DataBlock<T> {
     /// Loads generic counter based on the provided [`DataBlockFieldConfiguration`].
     pub(crate) fn get_counter(
         &self,
-        configuration: &(CounterConfig, DataBlockFieldConfiguration),
+        configuration: &(CustomDataConfig, DataBlockFieldConfiguration),
     ) -> u32 {
         self.load_bits(&configuration.1)
     }
@@ -238,6 +238,16 @@ impl<T: BorrowMut<[u8]>> DataBlock<T> {
         self.0.borrow_mut().swap_with_slice(other.0.borrow_mut());
     }
 
+    /// Stores data from another data block into this block.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the data blocks have different lengths. Both data blocks should come from the
+    /// same filter.
+    pub(crate) fn copy_from<U: Borrow<[u8]>>(&mut self, other: &DataBlock<U>) {
+        self.0.borrow_mut().copy_from_slice(other.0.borrow());
+    }
+
     /// Increments the LRU counter, based on the provided [`DataBlockFieldConfiguration`].
     pub(crate) fn inc_lru_counter(
         &mut self,
@@ -279,31 +289,17 @@ impl<T: BorrowMut<[u8]>> DataBlock<T> {
         }
     }
 
-    /// Increments the generic counter, based on the provided [`DataBlockFieldConfiguration`], by
-    /// the provided value.
-    pub(crate) fn inc_counter(
+    /// Modifies the custom data block, based on the provided [`DataBlockFieldConfiguration`].
+    /// It is always modified as [`u32`], regardless of configured bit count. Ensure that you are
+    /// using the least significant bits to represent your data, if bit count is < 32, because
+    /// higher bits will be ignored.
+    pub(crate) fn modify_custom_data(
         &mut self,
-        configuration: &(CounterConfig, DataBlockFieldConfiguration),
-        by: u32,
+        configuration: &(CustomDataConfig, DataBlockFieldConfiguration),
+        modification: impl Fn(u32) -> u32,
     ) {
-        let counter = self.load_bits(&configuration.1);
-        let mut new_counter = counter.saturating_add(by);
-        // Value mask is also the max possible value
-        if new_counter > configuration.1.value_mask() {
-            new_counter = configuration.1.value_mask();
-        }
-        self.store_bits(&configuration.1, new_counter);
-    }
-
-    /// Decrements the generic counter, based on the provided [`DataBlockFieldConfiguration`], by
-    /// the provided value.
-    pub(crate) fn dec_counter(
-        &mut self,
-        configuration: &(CounterConfig, DataBlockFieldConfiguration),
-        by: u32,
-    ) {
-        let counter = self.load_bits(&configuration.1);
-        self.store_bits(&configuration.1, counter.saturating_sub(by));
+        let data = self.load_bits(&configuration.1);
+        self.store_bits(&configuration.1, modification(data));
     }
 
     /// Sets the TTL counter, based on the provided [`DataBlockFieldConfiguration`].
