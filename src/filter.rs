@@ -151,9 +151,11 @@ impl<H: BuildHasher> CuckooFilter<H> {
             return None;
         }
 
+        let mut cur_data_block = self.new_data_block(&fp);
+
         let inserted = self
             .lock_bucket(i1 as usize)
-            .insert(&fp, &self.configuration);
+            .insert(&cur_data_block, &self.configuration);
 
         if inserted {
             return None;
@@ -161,22 +163,13 @@ impl<H: BuildHasher> CuckooFilter<H> {
 
         let inserted = self
             .lock_bucket(i2 as usize)
-            .insert(&fp, &self.configuration);
+            .insert(&cur_data_block, &self.configuration);
 
         if inserted {
             return None;
         }
 
         let mut cur_index = if rand::random::<bool>() { i1 } else { i2 };
-        let mut data = vec![0u8; self.configuration.data_block_size];
-        let mut cur_data_block = DataBlock::from(&mut data[..]);
-        cur_data_block.store_fingerprint(&fp, &self.configuration);
-        if let Some(ttl_config) = &self.configuration.ttl_field_config {
-            cur_data_block.set_ttl(ttl_config, ttl_config.0.ttl.into());
-        }
-        if let Some(lru_config) = &self.configuration.lru_field_config {
-            cur_data_block.inc_lru_counter(lru_config);
-        }
         for _ in 0..self.configuration.max_kicks {
             {
                 let mut bucket = self.lock_bucket(cur_index as usize);
@@ -194,10 +187,10 @@ impl<H: BuildHasher> CuckooFilter<H> {
                 );
             }
 
-            if self.lock_bucket(cur_index as usize).insert(
-                &cur_data_block.get_fingerprint(&self.configuration),
-                &self.configuration,
-            ) {
+            if self
+                .lock_bucket(cur_index as usize)
+                .insert(&cur_data_block, &self.configuration)
+            {
                 // Found an alternative spot for evicted item, done with kicks
                 return None;
             }
@@ -220,10 +213,11 @@ impl<H: BuildHasher> CuckooFilter<H> {
     /// [`Fingerprint::matches_key`].
     pub fn insert<K: Hash + ?Sized>(&self, key: &K) -> Option<Fingerprint> {
         let (fp, i1) = self.get_fingerprint_and_index(key);
+        let mut cur_data_block = self.new_data_block(&fp);
 
         let inserted = self
             .lock_bucket(i1 as usize)
-            .insert(&fp, &self.configuration);
+            .insert(&cur_data_block, &self.configuration);
 
         if inserted {
             return None;
@@ -233,22 +227,13 @@ impl<H: BuildHasher> CuckooFilter<H> {
 
         let inserted = self
             .lock_bucket(i2 as usize)
-            .insert(&fp, &self.configuration);
+            .insert(&cur_data_block, &self.configuration);
 
         if inserted {
             return None;
         }
 
         let mut cur_index = i1;
-        let mut data = vec![0u8; self.configuration.data_block_size];
-        let mut cur_data_block = DataBlock::from(&mut data[..]);
-        cur_data_block.store_fingerprint(&fp, &self.configuration);
-        if let Some(ttl_config) = &self.configuration.ttl_field_config {
-            cur_data_block.set_ttl(ttl_config, ttl_config.0.ttl.into());
-        }
-        if let Some(lru_config) = &self.configuration.lru_field_config {
-            cur_data_block.inc_lru_counter(lru_config);
-        }
         for _ in 0..self.configuration.max_kicks {
             {
                 let mut bucket = self.lock_bucket(cur_index as usize);
@@ -267,10 +252,10 @@ impl<H: BuildHasher> CuckooFilter<H> {
                 );
             }
 
-            if self.lock_bucket(cur_index as usize).insert(
-                &cur_data_block.get_fingerprint(&self.configuration),
-                &self.configuration,
-            ) {
+            if self
+                .lock_bucket(cur_index as usize)
+                .insert(&cur_data_block, &self.configuration)
+            {
                 // Found an alternative spot for evicted item, done with kicks
                 return None;
             }
@@ -448,6 +433,23 @@ impl<H: BuildHasher> CuckooFilter<H> {
     /// Generates the fingerprint and first index for the provided key.
     pub(crate) fn get_fingerprint<K: Hash + ?Sized>(&self, key: &K) -> Fingerprint {
         self.get_fingerprint_and_index(key).0
+    }
+
+    fn new_data_block(&self, fp: &Fingerprint) -> DataBlock<Vec<u8>> {
+        let data = vec![0u8; self.configuration.data_block_size];
+        let mut cur_data_block = DataBlock::from(data);
+        cur_data_block.store_fingerprint(fp, &self.configuration);
+
+        if let Some(ttl_config) = self.configuration.ttl_field_config.as_ref() {
+            cur_data_block.set_ttl(ttl_config, ttl_config.0.ttl.into());
+        }
+        if let Some(counter_config) = self.configuration.counter_field_config.as_ref() {
+            cur_data_block.inc_counter(counter_config, 1);
+        }
+        if let Some(lru_config) = self.configuration.lru_field_config.as_ref() {
+            cur_data_block.inc_lru_counter(lru_config);
+        }
+        cur_data_block
     }
 
     fn get_fingerprint_and_index<K: Hash + ?Sized>(&self, key: &K) -> (Fingerprint, u32) {

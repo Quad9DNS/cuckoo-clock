@@ -152,6 +152,12 @@ impl<'a> From<&'a [u8]> for DataBlock<&'a [u8]> {
     }
 }
 
+impl From<Vec<u8>> for DataBlock<Vec<u8>> {
+    fn from(value: Vec<u8>) -> Self {
+        Self(value)
+    }
+}
+
 impl<T: Borrow<[u8]>> DataBlock<T> {
     /// Provides read-only access to underlying bytes.
     pub(crate) fn inner(&self) -> &[u8] {
@@ -236,6 +242,16 @@ impl<T: BorrowMut<[u8]>> DataBlock<T> {
     /// same filter.
     pub(crate) fn swap<U: BorrowMut<[u8]>>(&mut self, other: &mut DataBlock<U>) {
         self.0.borrow_mut().swap_with_slice(other.0.borrow_mut());
+    }
+
+    /// Copy data from another data block.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the data blocks have different lengths. Both data blocks should come from the
+    /// same filter.
+    pub(crate) fn copy_from<U: Borrow<[u8]>>(&mut self, other: &DataBlock<U>) {
+        self.0.borrow_mut().copy_from_slice(other.0.borrow());
     }
 
     /// Increments the LRU counter, based on the provided [`DataBlockFieldConfiguration`].

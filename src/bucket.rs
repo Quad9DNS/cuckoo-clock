@@ -1,4 +1,4 @@
-use std::borrow::BorrowMut;
+use std::borrow::{Borrow, BorrowMut};
 
 use crate::{
     associated_data::AssociatedData,
@@ -33,33 +33,24 @@ impl Bucket {
     ///
     /// Returns false if the insertion has failed (if the bucket is fully occupied). In that case,
     /// alternate bucket should be tried and if that fails too, kicking process should be started.
-    pub(crate) fn insert(
+    pub(crate) fn insert<T: Borrow<[u8]>>(
         &mut self,
-        fingerprint: &Fingerprint,
+        data_block: &DataBlock<T>,
         configuration: &CuckooConfiguration,
     ) -> bool {
+        let fingerprint = data_block.get_fingerprint(configuration);
         for i in 0..configuration.bucket_size {
             let mut data = self.get_data_block(i, configuration);
             let stored = data.get_fingerprint(configuration);
 
-            let reinsert = stored == *fingerprint;
+            let reinsert = stored == fingerprint;
 
             if !reinsert {
                 if stored.is_empty() {
-                    data.store_fingerprint(fingerprint, configuration);
+                    data.copy_from(data_block);
                 } else {
                     continue;
                 }
-            }
-
-            if let Some(ttl_config) = configuration.ttl_field_config.as_ref() {
-                data.set_ttl(ttl_config, ttl_config.0.ttl.into());
-            }
-            if let Some(counter_config) = configuration.counter_field_config.as_ref() {
-                data.inc_counter(counter_config, 1);
-            }
-            if let Some(lru_config) = configuration.lru_field_config.as_ref() {
-                data.inc_lru_counter(lru_config);
             }
             return true;
         }
