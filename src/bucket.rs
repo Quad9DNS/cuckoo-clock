@@ -51,6 +51,8 @@ impl Bucket {
                 } else {
                     continue;
                 }
+            } else {
+                data.merge_associated_from(data_block, configuration);
             }
             return true;
         }

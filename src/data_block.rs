@@ -254,6 +254,45 @@ impl<T: BorrowMut<[u8]>> DataBlock<T> {
         self.0.borrow_mut().copy_from_slice(other.0.borrow());
     }
 
+    /// Merges data from another data block.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the data blocks have different lengths. Both data blocks should come from the
+    /// same filter.
+    pub(crate) fn merge_associated_from<U: Borrow<[u8]>>(
+        &mut self,
+        other: &DataBlock<U>,
+        configuration: &CuckooConfiguration,
+    ) {
+        if let Some(lru) = &configuration.lru_field_config {
+            let counter = self.load_bits(&lru.1);
+            let other = other.load_bits(&lru.1);
+            let mut new_counter = counter.saturating_add(other);
+            // Value mask is also the max possible value
+            if new_counter > lru.1.value_mask() {
+                new_counter = lru.1.value_mask();
+            }
+            self.store_bits(&lru.1, new_counter);
+        }
+        if let Some(ttl) = &configuration.ttl_field_config {
+            let this_ttl = self.load_bits(&ttl.1);
+            let other = other.load_bits(&ttl.1);
+            self.store_bits(&ttl.1, this_ttl.max(other));
+        }
+        if let Some(counter_config) = &configuration.counter_field_config {
+            let counter = self.load_bits(&counter_config.1);
+            let other = other.load_bits(&counter_config.1);
+            let mut new_counter = counter.saturating_add(other);
+            // Value mask is also the max possible value
+            if new_counter > counter_config.1.value_mask() {
+                new_counter = counter_config.1.value_mask();
+            }
+            self.store_bits(&counter_config.1, new_counter);
+        }
+        self.0.borrow_mut().copy_from_slice(other.0.borrow());
+    }
+
     /// Increments the LRU counter, based on the provided [`DataBlockFieldConfiguration`].
     pub(crate) fn inc_lru_counter(
         &mut self,
