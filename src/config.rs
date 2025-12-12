@@ -296,7 +296,8 @@ pub struct TtlConfig {
 /// use cuckoo_clock::config::CounterConfig;
 ///
 /// let ttl_config = CounterConfig {
-///     counter_bits: 5.try_into()?
+///     counter_bits: 5.try_into()?,
+///     ..Default::default()
 /// };
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
@@ -305,12 +306,18 @@ pub struct CounterConfig {
     /// How many bits are used to represent the generic counter.
     /// Larget bit counts allow higher counter values to be represented.
     pub counter_bits: BitCount,
+    /// Diff to apply to counter on each insert.
+    pub change_on_insert: i32,
+    /// Diff to apply to counter on each lookup.
+    pub change_on_lookup: i32,
 }
 
 impl Default for CounterConfig {
     fn default() -> Self {
         Self {
-            counter_bits: BitCount(8),
+            counter_bits: BitCount(4),
+            change_on_insert: 1,
+            change_on_lookup: 1,
         }
     }
 }

@@ -50,7 +50,8 @@ use crate::{
 ///         .fingerprint_bits(18.try_into()?)
 ///         .bucket_size(8.try_into()?)
 ///         .with_counter(CounterConfig {
-///             counter_bits: 4.try_into()?
+///             counter_bits: 4.try_into()?,
+///             ..Default::default()
 ///         })
 ///         .with_ttl(TtlConfig {
 ///             ttl: 600.try_into()?,
@@ -68,8 +69,9 @@ use crate::{
 /// // Insertion must have been successful
 /// assert!(filter.contains("example_data"));
 ///
-/// // Counter should be 3 now, because we accessed this item 3 times
-/// assert_eq!(filter.get_associated_data("example_data").unwrap().get_counter()?, 3);
+/// // Counter should be 4 now.
+/// // We have accessed this item 3 times, but `get_associated_data` also counts as an access.
+/// assert_eq!(filter.get_associated_data("example_data").unwrap().get_counter()?, 4);
 ///
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
@@ -119,8 +121,6 @@ impl<H: BuildHasher> CuckooFilter<H> {
         self.configuration.bucket_count
     }
 
-    // TODO: use this to ensure no duplicates - easier than messing up the hot path
-    // Simplify, currently it is just a copy of contains + insert
     /// Inserts a new item into the filter, only if the filter doesn't contain it alrady.
     ///
     /// This is slower than [`CuckooFilter::insert`], but it ensures that no duplicates are present
@@ -444,7 +444,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
             cur_data_block.set_ttl(ttl_config, ttl_config.0.ttl.into());
         }
         if let Some(counter_config) = self.configuration.counter_field_config.as_ref() {
-            cur_data_block.inc_counter(counter_config, 1);
+            cur_data_block.update_counter(counter_config, counter_config.0.change_on_insert);
         }
         if let Some(lru_config) = self.configuration.lru_field_config.as_ref() {
             cur_data_block.inc_lru_counter(lru_config);

@@ -53,7 +53,8 @@ impl std::error::Error for AccessError {
 /// let data = filter.get_associated_data("example_data").unwrap();
 ///
 /// assert_eq!(data.get_stored_ttl_value()?, 10);
-/// assert_eq!(data.get_lru_counter()?, 1);
+/// // `get_associated_data` also increases LRU counter - it is counted as an access
+/// assert_eq!(data.get_lru_counter()?, 2);
 ///
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```

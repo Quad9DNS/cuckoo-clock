@@ -336,29 +336,18 @@ impl<T: BorrowMut<[u8]>> DataBlock<T> {
 
     /// Increments the generic counter, based on the provided [`DataBlockFieldConfiguration`], by
     /// the provided value.
-    pub(crate) fn inc_counter(
+    pub(crate) fn update_counter(
         &mut self,
         configuration: &(CounterConfig, DataBlockFieldConfiguration),
-        by: u32,
+        by: i32,
     ) {
         let counter = self.load_bits(&configuration.1);
-        let mut new_counter = counter.saturating_add(by);
+        let mut new_counter = counter.saturating_add_signed(by);
         // Value mask is also the max possible value
         if new_counter > configuration.1.value_mask() {
             new_counter = configuration.1.value_mask();
         }
         self.store_bits(&configuration.1, new_counter);
-    }
-
-    /// Decrements the generic counter, based on the provided [`DataBlockFieldConfiguration`], by
-    /// the provided value.
-    pub(crate) fn dec_counter(
-        &mut self,
-        configuration: &(CounterConfig, DataBlockFieldConfiguration),
-        by: u32,
-    ) {
-        let counter = self.load_bits(&configuration.1);
-        self.store_bits(&configuration.1, counter.saturating_sub(by));
     }
 
     /// Sets the TTL counter, based on the provided [`DataBlockFieldConfiguration`].

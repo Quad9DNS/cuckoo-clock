@@ -125,7 +125,7 @@ impl Bucket {
 
             if stored == *fingerprint {
                 if let Some(counter_config) = configuration.counter_field_config.as_ref() {
-                    data.inc_counter(counter_config, 1);
+                    data.update_counter(counter_config, counter_config.0.change_on_lookup);
                 }
                 if let Some(lru_config) = configuration.lru_field_config.as_ref() {
                     data.inc_lru_counter(lru_config);
@@ -138,8 +138,6 @@ impl Bucket {
 
     /// Looks for the fingerprint in this bucket and returns its associated data.
     ///
-    /// NOTE: This doesn't update counters and LRU
-    ///
     /// Returns the data associated with the fingerprint, if found.
     pub(crate) fn get_associated_data(
         &mut self,
@@ -147,10 +145,16 @@ impl Bucket {
         configuration: &CuckooConfiguration,
     ) -> Option<AssociatedData> {
         for i in 0..configuration.bucket_size {
-            let data = self.get_data_block(i, configuration);
+            let mut data = self.get_data_block(i, configuration);
             let stored = data.get_fingerprint(configuration);
 
             if stored == *fingerprint {
+                if let Some(counter_config) = configuration.counter_field_config.as_ref() {
+                    data.update_counter(counter_config, counter_config.0.change_on_lookup);
+                }
+                if let Some(lru_config) = configuration.lru_field_config.as_ref() {
+                    data.inc_lru_counter(lru_config);
+                }
                 return Some(AssociatedData::new(
                     self.get_data_block(i, configuration),
                     configuration.clone(),
