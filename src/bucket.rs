@@ -219,15 +219,28 @@ impl Bucket {
     }
 
     /// Ages all TTL counters in this bucket.
+    ///
+    /// Returns the number of removed items after aging.
     pub(crate) fn age_ttl_counters(
         &mut self,
         configuration: &CuckooConfiguration,
         ttl_config: &(TtlConfig, DataBlockFieldConfiguration),
-    ) {
+    ) -> usize {
+        let mut removed = 0;
         for i in 0..configuration.bucket_size {
-            self.get_data_block(i, configuration)
-                .age_ttl_counter(ttl_config);
+            let db = self.get_data_block(i, configuration);
+            if db.occupied(configuration) {
+                removed += if self
+                    .get_data_block(i, configuration)
+                    .age_ttl_counter(ttl_config)
+                {
+                    1
+                } else {
+                    0
+                }
+            }
         }
+        removed
     }
 
     fn get_data_block(

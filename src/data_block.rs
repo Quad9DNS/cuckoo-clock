@@ -229,6 +229,11 @@ impl<T: BorrowMut<[u8]>> DataBlock<T> {
         self.store_bits(&configuration.fingerprint_field_config, fingerprint.data);
     }
 
+    /// Returns true if this slot is occupied
+    pub(crate) fn occupied(&self, configuration: &CuckooConfiguration) -> bool {
+        !self.get_fingerprint(configuration).is_empty()
+    }
+
     /// Resets this data block by setting all bits to 0.
     pub(crate) fn reset(&mut self) {
         self.0.borrow_mut().fill(0u8);
@@ -322,16 +327,18 @@ impl<T: BorrowMut<[u8]>> DataBlock<T> {
     /// the data if it reaches 0.
     ///
     /// Aging is done by reducing the TTL counter by 1.
+    /// Returns true if this resulted in removal of this item.
     pub(crate) fn age_ttl_counter(
         &mut self,
         configuration: &(TtlConfig, DataBlockFieldConfiguration),
-    ) {
+    ) -> bool {
         let mut counter = self.load_bits(&configuration.1);
         counter = counter.saturating_sub(1);
         self.store_bits(&configuration.1, counter);
         if counter == 0 {
             self.reset();
         }
+        counter == 0
     }
 
     /// Increments the generic counter, based on the provided [`DataBlockFieldConfiguration`], by

@@ -1,7 +1,10 @@
 use std::{
     hash::{BuildHasher, Hash, RandomState},
     iter::repeat_with,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{
+        Arc, Mutex, MutexGuard,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use crate::{
@@ -81,6 +84,7 @@ pub struct CuckooFilter<H: BuildHasher> {
     configuration: CuckooConfiguration,
     buckets: Arc<Vec<Mutex<Bucket>>>,
     build_hasher: H,
+    items: Arc<AtomicUsize>,
 }
 
 impl CuckooFilter<RandomState> {
@@ -109,6 +113,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
                 .collect::<Vec<_>>()
                 .into(),
             build_hasher,
+            items: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -119,6 +124,11 @@ impl<H: BuildHasher> CuckooFilter<H> {
     /// capacity.
     pub const fn get_bucket_count(&self) -> usize {
         self.configuration.bucket_count
+    }
+
+    /// Returns the actual number of items currently stored in this [`CuckooFilter`].
+    pub fn get_item_count(&self) -> usize {
+        self.items.load(Ordering::Relaxed)
     }
 
     /// Inserts a new item into the filter, only if the filter doesn't contain it already.
@@ -176,6 +186,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
             .insert(&cur_data_block, &self.configuration);
 
         if inserted {
+            self.items.fetch_add(1, Ordering::Relaxed);
             return None;
         }
 
@@ -184,6 +195,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
             .insert(&cur_data_block, &self.configuration);
 
         if inserted {
+            self.items.fetch_add(1, Ordering::Relaxed);
             return None;
         }
 
@@ -209,6 +221,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
                 .lock_bucket(cur_index as usize)
                 .insert(&cur_data_block, &self.configuration)
             {
+                self.items.fetch_add(1, Ordering::Relaxed);
                 // Found an alternative spot for evicted item, done with kicks
                 return None;
             }
@@ -250,6 +263,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
             .insert(&cur_data_block, &self.configuration);
 
         if inserted {
+            self.items.fetch_add(1, Ordering::Relaxed);
             return None;
         }
 
@@ -260,6 +274,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
             .insert(&cur_data_block, &self.configuration);
 
         if inserted {
+            self.items.fetch_add(1, Ordering::Relaxed);
             return None;
         }
 
@@ -286,6 +301,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
                 .lock_bucket(cur_index as usize)
                 .insert(&cur_data_block, &self.configuration)
             {
+                self.items.fetch_add(1, Ordering::Relaxed);
                 // Found an alternative spot for evicted item, done with kicks
                 return None;
             }
@@ -378,6 +394,10 @@ impl<H: BuildHasher> CuckooFilter<H> {
                 .remove(&fp, &self.configuration);
         }
 
+        if removed {
+            self.items.fetch_sub(1, Ordering::Relaxed);
+        }
+
         removed
     }
 
@@ -430,6 +450,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
             return;
         }
 
+        let mut removed = 0;
         for b in self.buckets.iter() {
             #[expect(clippy::unwrap_used)]
             let mut bucket = b.lock().unwrap();
@@ -437,8 +458,12 @@ impl<H: BuildHasher> CuckooFilter<H> {
                 bucket.age_lru_counters(&self.configuration, lru_config);
             }
             if let Some(ttl_config) = &self.configuration.ttl_field_config {
-                bucket.age_ttl_counters(&self.configuration, ttl_config);
+                removed += bucket.age_ttl_counters(&self.configuration, ttl_config);
             }
+        }
+
+        if removed > 0 {
+            self.items.fetch_sub(removed, Ordering::Relaxed);
         }
     }
 
@@ -453,12 +478,17 @@ impl<H: BuildHasher> CuckooFilter<H> {
             return;
         }
 
+        let mut removed = 0;
         for b in self.buckets.iter() {
             #[expect(clippy::unwrap_used)]
             let mut bucket = b.lock().unwrap();
             if let Some(ttl_config) = &self.configuration.ttl_field_config {
-                bucket.age_ttl_counters(&self.configuration, ttl_config);
+                removed += bucket.age_ttl_counters(&self.configuration, ttl_config);
             }
+        }
+
+        if removed > 0 {
+            self.items.fetch_sub(removed, Ordering::Relaxed);
         }
     }
 
@@ -768,7 +798,7 @@ mod tests {
                 .unwrap()
                 .get_counter()
                 .unwrap(),
-            10
+            13 // initial 10 + 1 on contains + 2x1 on get_associated_data
         );
     }
 
@@ -833,6 +863,8 @@ mod tests {
                 .unwrap(),
         );
 
+        assert_eq!(filter.get_item_count(), 0);
+
         let mut stored_words = HashSet::new();
 
         for (index, word) in words.iter().enumerate() {
@@ -847,9 +879,13 @@ mod tests {
             }
         }
 
+        assert_eq!(filter.get_item_count(), stored_words.len());
+
         for _ in 0..2 {
             filter.scan_and_update_full();
         }
+
+        assert_eq!(filter.get_item_count(), stored_words.len());
         for word in stored_words {
             assert!(
                 filter.contains(word),
@@ -865,5 +901,6 @@ mod tests {
                 "Filter contained {word}, but shouldn't have"
             );
         }
+        assert_eq!(filter.get_item_count(), 0);
     }
 }
