@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     associated_data::AssociatedData,
-    bucket::Bucket,
+    bucket::{Bucket, InsertValues, LookupValues},
     config::CuckooConfiguration,
     data_block::{DataBlock, Fingerprint},
 };
@@ -121,7 +121,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
         self.configuration.bucket_count
     }
 
-    /// Inserts a new item into the filter, only if the filter doesn't contain it alrady.
+    /// Inserts a new item into the filter, only if the filter doesn't contain it already.
     ///
     /// This is slower than [`CuckooFilter::insert`], but it ensures that no duplicates are present
     /// in the filter. That can be useful when [`AssociatedData`] is used, to ensure consistent
@@ -132,11 +132,29 @@ impl<H: BuildHasher> CuckooFilter<H> {
     /// evicted in random kicking process. That can be confirmed using
     /// [`Fingerprint::matches_key`].
     pub fn insert_if_not_present<K: Hash + ?Sized>(&self, key: &K) -> Option<Fingerprint> {
+        self.insert_if_not_present_with_update(
+            key,
+            InsertValues::default(),
+            LookupValues::default(),
+        )
+    }
+
+    /// Inserts a new item into the filter, only if the filter doesn't contain it already. Also
+    /// applies provided updates.
+    ///
+    /// This is similar to [`CuckooFilter::insert_if_not_present`], but it also updates found
+    /// values, or starts off values with different values.
+    pub fn insert_if_not_present_with_update<K: Hash + ?Sized>(
+        &self,
+        key: &K,
+        insert_values: InsertValues,
+        lookup_update: LookupValues,
+    ) -> Option<Fingerprint> {
         let (fp, i1) = self.get_fingerprint_and_index(key);
 
-        let mut contains = self
-            .lock_bucket(i1 as usize)
-            .contains(&fp, &self.configuration);
+        let mut contains =
+            self.lock_bucket(i1 as usize)
+                .contains(&fp, &self.configuration, &lookup_update);
 
         if contains {
             return None;
@@ -145,13 +163,13 @@ impl<H: BuildHasher> CuckooFilter<H> {
         let i2 = self.alt_index(&fp, i1);
         contains = self
             .lock_bucket(i2 as usize)
-            .contains(&fp, &self.configuration);
+            .contains(&fp, &self.configuration, &lookup_update);
 
         if contains {
             return None;
         }
 
-        let mut cur_data_block = self.new_data_block(&fp);
+        let mut cur_data_block = self.new_data_block(&fp, insert_values);
 
         let inserted = self
             .lock_bucket(i1 as usize)
@@ -212,8 +230,20 @@ impl<H: BuildHasher> CuckooFilter<H> {
     /// evicted in random kicking process. That can be confirmed using
     /// [`Fingerprint::matches_key`].
     pub fn insert<K: Hash + ?Sized>(&self, key: &K) -> Option<Fingerprint> {
+        self.insert_with_defaults(key, InsertValues::default())
+    }
+
+    /// Inserts a new item into the filter, with defined defaults for associated data.
+    ///
+    /// This is similar to [`CuckooFilter::insert`], but allows overrides for associated data
+    /// defaults.
+    pub fn insert_with_defaults<K: Hash + ?Sized>(
+        &self,
+        key: &K,
+        default: InsertValues,
+    ) -> Option<Fingerprint> {
         let (fp, i1) = self.get_fingerprint_and_index(key);
-        let mut cur_data_block = self.new_data_block(&fp);
+        let mut cur_data_block = self.new_data_block(&fp, default);
 
         let inserted = self
             .lock_bucket(i1 as usize)
@@ -265,25 +295,33 @@ impl<H: BuildHasher> CuckooFilter<H> {
         Some(cur_data_block.get_fingerprint(&self.configuration))
     }
 
-    /// Check if this key is stored in the filter.
+    /// Check if this key is stored in the filter and applies the provided [`LookupValues`].
     ///
-    /// Returns true if this key might be present in the filter. If false is returned, then the key
-    /// is definitely not present.
-    pub fn contains<K: Hash + ?Sized>(&self, key: &K) -> bool {
+    /// This is similar to [`CuckooFilter::contains`], but allows overrides for updates on
+    /// successful lookup.
+    pub fn contains_with_update<K: Hash + ?Sized>(&self, key: &K, update: LookupValues) -> bool {
         let (fp, i1) = self.get_fingerprint_and_index(key);
 
-        let mut contains = self
-            .lock_bucket(i1 as usize)
-            .contains(&fp, &self.configuration);
+        let mut contains =
+            self.lock_bucket(i1 as usize)
+                .contains(&fp, &self.configuration, &update);
 
         if !contains {
             let i2 = self.alt_index(&fp, i1);
             contains = self
                 .lock_bucket(i2 as usize)
-                .contains(&fp, &self.configuration);
+                .contains(&fp, &self.configuration, &update);
         }
 
         contains
+    }
+
+    /// Check if this key is stored in the filter.
+    ///
+    /// Returns true if this key might be present in the filter. If false is returned, then the key
+    /// is definitely not present.
+    pub fn contains<K: Hash + ?Sized>(&self, key: &K) -> bool {
+        self.contains_with_update(key, LookupValues::default())
     }
 
     /// Loads associated data of a key stored in the filter.
@@ -293,17 +331,31 @@ impl<H: BuildHasher> CuckooFilter<H> {
     /// recommended to use [`CuckooFilter::insert_if_not_present`] if consistent [`AssociatedData`]
     /// is required.
     pub fn get_associated_data<K: Hash + ?Sized>(&self, key: &K) -> Option<AssociatedData> {
+        self.get_associated_data_with_update(key, LookupValues::default())
+    }
+
+    /// Loads associated data of a key stored in the filter and applies the provided [`LookupValues`].
+    ///
+    /// This is similar to [`CuckooFilter::get_associated_data`], but allows overrides for updates on
+    /// successful lookup.
+    pub fn get_associated_data_with_update<K: Hash + ?Sized>(
+        &self,
+        key: &K,
+        update: LookupValues,
+    ) -> Option<AssociatedData> {
         let (fp, i1) = self.get_fingerprint_and_index(key);
 
-        let mut contains = self
-            .lock_bucket(i1 as usize)
-            .get_associated_data(&fp, &self.configuration);
+        let mut contains =
+            self.lock_bucket(i1 as usize)
+                .get_associated_data(&fp, &self.configuration, &update);
 
         if contains.is_none() {
             let i2 = self.alt_index(&fp, i1);
-            contains = self
-                .lock_bucket(i2 as usize)
-                .get_associated_data(&fp, &self.configuration);
+            contains = self.lock_bucket(i2 as usize).get_associated_data(
+                &fp,
+                &self.configuration,
+                &update,
+            );
         }
 
         contains
@@ -435,16 +487,21 @@ impl<H: BuildHasher> CuckooFilter<H> {
         self.get_fingerprint_and_index(key).0
     }
 
-    fn new_data_block(&self, fp: &Fingerprint) -> DataBlock<Vec<u8>> {
+    fn new_data_block(&self, fp: &Fingerprint, defaults: InsertValues) -> DataBlock<Vec<u8>> {
         let data = vec![0u8; self.configuration.data_block_size];
         let mut cur_data_block = DataBlock::from(data);
         cur_data_block.store_fingerprint(fp, &self.configuration);
 
         if let Some(ttl_config) = self.configuration.ttl_field_config.as_ref() {
-            cur_data_block.set_ttl(ttl_config, ttl_config.0.ttl.into());
+            cur_data_block.set_ttl(ttl_config, defaults.ttl.unwrap_or(ttl_config.0.ttl.into()));
         }
         if let Some(counter_config) = self.configuration.counter_field_config.as_ref() {
-            cur_data_block.update_counter(counter_config, counter_config.0.change_on_insert);
+            cur_data_block.update_counter(
+                counter_config,
+                defaults
+                    .counter
+                    .unwrap_or(counter_config.0.change_on_insert),
+            );
         }
         if let Some(lru_config) = self.configuration.lru_field_config.as_ref() {
             cur_data_block.inc_lru_counter(lru_config);
@@ -493,7 +550,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
 mod tests {
     use std::{collections::HashSet, hash::Hasher, ops::Range};
 
-    use crate::config::{LruConfig, TtlConfig};
+    use crate::config::{CounterConfig, LruConfig, TtlConfig};
 
     use super::*;
 
@@ -673,6 +730,92 @@ mod tests {
         {
             assert!(filter.contains(item), "Only one item should be kicked");
         }
+    }
+
+    #[test]
+    fn overriding_defaults() {
+        let filter = CuckooFilter::new_random(
+            CuckooConfiguration::builder(1000)
+                .with_ttl(TtlConfig {
+                    ttl: 30.try_into().unwrap(),
+                    ttl_bits: 8.try_into().unwrap(),
+                })
+                .with_counter(CounterConfig::default())
+                .build()
+                .unwrap(),
+        );
+
+        filter.insert_with_defaults(
+            "basic",
+            InsertValues {
+                ttl: Some(50),
+                counter: Some(10),
+            },
+        );
+
+        assert!(filter.contains("basic"));
+        assert_eq!(
+            filter
+                .get_associated_data("basic")
+                .unwrap()
+                .get_stored_ttl_value()
+                .unwrap(),
+            50
+        );
+        assert_eq!(
+            filter
+                .get_associated_data("basic")
+                .unwrap()
+                .get_counter()
+                .unwrap(),
+            10
+        );
+    }
+
+    #[test]
+    fn overriding_updates() {
+        let filter = CuckooFilter::new_random(
+            CuckooConfiguration::builder(1000)
+                .with_ttl(TtlConfig {
+                    ttl: 30.try_into().unwrap(),
+                    ttl_bits: 8.try_into().unwrap(),
+                })
+                .with_counter(CounterConfig::default())
+                .build()
+                .unwrap(),
+        );
+
+        filter.insert_with_defaults(
+            "basic",
+            InsertValues {
+                ttl: Some(5),
+                counter: Some(1),
+            },
+        );
+
+        assert!(filter.contains_with_update(
+            "basic",
+            LookupValues {
+                ttl: Some(50),
+                counter_diff: Some(10),
+            },
+        ));
+        assert_eq!(
+            filter
+                .get_associated_data("basic")
+                .unwrap()
+                .get_stored_ttl_value()
+                .unwrap(),
+            50
+        );
+        assert_eq!(
+            filter
+                .get_associated_data("basic")
+                .unwrap()
+                .get_counter()
+                .unwrap(),
+            13 // initial 1 + 10 on contains + 2x1 on get_associated_data
+        );
     }
 
     #[test]

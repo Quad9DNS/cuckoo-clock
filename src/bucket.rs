@@ -118,6 +118,7 @@ impl Bucket {
         &mut self,
         fingerprint: &Fingerprint,
         configuration: &CuckooConfiguration,
+        update: &LookupValues,
     ) -> bool {
         for i in 0..configuration.bucket_size {
             let mut data = self.get_data_block(i, configuration);
@@ -125,7 +126,17 @@ impl Bucket {
 
             if stored == *fingerprint {
                 if let Some(counter_config) = configuration.counter_field_config.as_ref() {
-                    data.update_counter(counter_config, counter_config.0.change_on_lookup);
+                    data.update_counter(
+                        counter_config,
+                        update
+                            .counter_diff
+                            .unwrap_or(counter_config.0.change_on_lookup),
+                    );
+                }
+                if let Some(ttl_config) = configuration.ttl_field_config.as_ref()
+                    && let Some(ttl) = update.ttl
+                {
+                    data.set_ttl(ttl_config, ttl);
                 }
                 if let Some(lru_config) = configuration.lru_field_config.as_ref() {
                     data.inc_lru_counter(lru_config);
@@ -143,6 +154,7 @@ impl Bucket {
         &mut self,
         fingerprint: &Fingerprint,
         configuration: &CuckooConfiguration,
+        update: &LookupValues,
     ) -> Option<AssociatedData> {
         for i in 0..configuration.bucket_size {
             let mut data = self.get_data_block(i, configuration);
@@ -150,7 +162,17 @@ impl Bucket {
 
             if stored == *fingerprint {
                 if let Some(counter_config) = configuration.counter_field_config.as_ref() {
-                    data.update_counter(counter_config, counter_config.0.change_on_lookup);
+                    data.update_counter(
+                        counter_config,
+                        update
+                            .counter_diff
+                            .unwrap_or(counter_config.0.change_on_lookup),
+                    );
+                }
+                if let Some(ttl_config) = configuration.ttl_field_config.as_ref()
+                    && let Some(ttl) = update.ttl
+                {
+                    data.set_ttl(ttl_config, ttl);
                 }
                 if let Some(lru_config) = configuration.lru_field_config.as_ref() {
                     data.inc_lru_counter(lru_config);
@@ -216,4 +238,26 @@ impl Bucket {
         let size = configuration.data_block_size;
         (&mut self.data[(index * size)..((index + 1) * size)]).into()
     }
+}
+
+/// Values to store with the fingerprint on insertion.
+#[derive(Default)]
+pub struct InsertValues {
+    /// TTL to set for the fingerprint on insertion.
+    /// This is ignored if the TTL configuration is not enabled.
+    pub ttl: Option<u32>,
+    /// Counter to set to the fingerprint on insertion.
+    /// This is ignored if the counter configuration is not enabled.
+    pub counter: Option<i32>,
+}
+
+/// Values to store with the fingerprint on lookups.
+#[derive(Default)]
+pub struct LookupValues {
+    /// TTL to set for the fingerprint on lookup.
+    /// This is ignored if the TTL configuration is not enabled.
+    pub ttl: Option<u32>,
+    /// Counter diff to apply (add/remove) to the fingerprint on lookups.
+    /// This is ignored if the counter configuration is not enabled.
+    pub counter_diff: Option<i32>,
 }

@@ -39,4 +39,7 @@ pub mod config;
 mod data_block;
 mod filter;
 
-pub use {associated_data::AssociatedData, data_block::Fingerprint, filter::CuckooFilter};
+pub use {
+    associated_data::AssociatedData, bucket::InsertValues, bucket::LookupValues,
+    data_block::Fingerprint, filter::CuckooFilter,
+};
