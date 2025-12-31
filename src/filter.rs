@@ -131,6 +131,15 @@ impl<H: BuildHasher> CuckooFilter<H> {
         self.items.load(Ordering::Relaxed)
     }
 
+    /// Returns the memory usage of this filter in bytes.
+    pub fn get_memory_usage(&self) -> usize {
+        size_of::<Self>()
+            + size_of::<AtomicUsize>()
+            + size_of::<Vec<Mutex<Bucket>>>()
+            + size_of::<Mutex<Bucket>>() * self.buckets.len()
+            + self.configuration.bucket_byte_size * self.buckets.len()
+    }
+
     /// Inserts a new item into the filter, only if the filter doesn't contain it already.
     ///
     /// This is slower than [`CuckooFilter::insert`], but it ensures that no duplicates are present
