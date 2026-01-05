@@ -452,11 +452,11 @@ impl<H: BuildHasher> CuckooFilter<H> {
     ///
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn scan_and_update_full(&self) {
+    pub fn scan_and_update_full(&self) -> usize {
         if self.configuration.lru_field_config.is_none()
             && self.configuration.ttl_field_config.is_none()
         {
-            return;
+            return 0;
         }
 
         let mut removed = 0;
@@ -474,6 +474,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
         if removed > 0 {
             self.items.fetch_sub(removed, Ordering::Relaxed);
         }
+        removed
     }
 
     /// Scans all buckets of this filter and reduces TTL counters.
@@ -482,9 +483,9 @@ impl<H: BuildHasher> CuckooFilter<H> {
     /// allows more control, enabling different update frequency for TTL and LRU.
     ///
     /// This is a no-op if TTL is disabled.
-    pub fn scan_and_update_ttl(&self) {
+    pub fn scan_and_update_ttl(&self) -> usize {
         if self.configuration.ttl_field_config.is_none() {
-            return;
+            return 0;
         }
 
         let mut removed = 0;
@@ -499,6 +500,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
         if removed > 0 {
             self.items.fetch_sub(removed, Ordering::Relaxed);
         }
+        removed
     }
 
     /// Scans all buckets of this filter and reduces LRU counters.
@@ -891,11 +893,11 @@ mod tests {
         assert_eq!(filter.get_item_count(), stored_words.len());
 
         for _ in 0..2 {
-            filter.scan_and_update_full();
+            assert_eq!(filter.scan_and_update_full(), 0);
         }
 
         assert_eq!(filter.get_item_count(), stored_words.len());
-        for word in stored_words {
+        for word in stored_words.iter() {
             assert!(
                 filter.contains(word),
                 "Word: {word} expected in the filter, but not found"
@@ -903,7 +905,7 @@ mod tests {
         }
 
         // TTL should remove all entries now
-        filter.scan_and_update_full();
+        assert_eq!(filter.scan_and_update_full(), stored_words.len());
         for word in &words {
             assert!(
                 !filter.contains(word),
