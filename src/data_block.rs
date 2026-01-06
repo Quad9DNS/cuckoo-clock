@@ -295,7 +295,6 @@ impl<T: BorrowMut<[u8]>> DataBlock<T> {
             }
             self.store_bits(&counter_config.1, new_counter);
         }
-        self.0.borrow_mut().copy_from_slice(other.0.borrow());
     }
 
     /// Increments the LRU counter, based on the provided [`DataBlockFieldConfiguration`].
