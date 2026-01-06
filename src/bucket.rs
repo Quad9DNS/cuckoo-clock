@@ -87,8 +87,9 @@ impl Bucket {
         lru_config: &(LruConfig, DataBlockFieldConfiguration),
     ) -> bool {
         let mut min = data_block.get_lru_counter(lru_config);
-        if min == 0 {
-            // TODO: What happens if LRU is really at 0?
+        if min == 1 {
+            // TODO: What happens if LRU is really at 1?
+            // Currently 1 is the default for new items
             min = u32::MAX;
         }
         let mut pos = configuration.bucket_size;
