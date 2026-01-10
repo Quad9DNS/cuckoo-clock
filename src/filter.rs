@@ -128,7 +128,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
 
     /// Returns the actual number of items currently stored in this [`CuckooFilter`].
     pub fn get_item_count(&self) -> usize {
-        self.items.load(Ordering::Acquire)
+        self.items.load(Ordering::Relaxed)
     }
 
     /// Returns the memory usage of this filter in bytes.
@@ -195,7 +195,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
             .insert(&cur_data_block, &self.configuration);
 
         if inserted {
-            self.items.fetch_add(1, Ordering::AcqRel);
+            self.items.fetch_add(1, Ordering::Relaxed);
             return None;
         }
 
@@ -204,7 +204,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
             .insert(&cur_data_block, &self.configuration);
 
         if inserted {
-            self.items.fetch_add(1, Ordering::AcqRel);
+            self.items.fetch_add(1, Ordering::Relaxed);
             return None;
         }
 
@@ -230,7 +230,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
                 .lock_bucket(cur_index as usize)
                 .insert(&cur_data_block, &self.configuration)
             {
-                self.items.fetch_add(1, Ordering::AcqRel);
+                self.items.fetch_add(1, Ordering::Relaxed);
                 // Found an alternative spot for evicted item, done with kicks
                 return None;
             }
@@ -272,7 +272,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
             .insert(&cur_data_block, &self.configuration);
 
         if inserted {
-            self.items.fetch_add(1, Ordering::AcqRel);
+            self.items.fetch_add(1, Ordering::Relaxed);
             return None;
         }
 
@@ -283,7 +283,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
             .insert(&cur_data_block, &self.configuration);
 
         if inserted {
-            self.items.fetch_add(1, Ordering::AcqRel);
+            self.items.fetch_add(1, Ordering::Relaxed);
             return None;
         }
 
@@ -310,7 +310,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
                 .lock_bucket(cur_index as usize)
                 .insert(&cur_data_block, &self.configuration)
             {
-                self.items.fetch_add(1, Ordering::AcqRel);
+                self.items.fetch_add(1, Ordering::Relaxed);
                 // Found an alternative spot for evicted item, done with kicks
                 return None;
             }
@@ -404,7 +404,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
         }
 
         if removed {
-            self.items.fetch_sub(1, Ordering::AcqRel);
+            self.items.fetch_sub(1, Ordering::Relaxed);
         }
 
         removed
@@ -472,7 +472,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
         }
 
         if removed > 0 {
-            self.items.fetch_sub(removed, Ordering::AcqRel);
+            self.items.fetch_sub(removed, Ordering::Relaxed);
         }
         removed
     }
@@ -498,7 +498,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
         }
 
         if removed > 0 {
-            self.items.fetch_sub(removed, Ordering::AcqRel);
+            self.items.fetch_sub(removed, Ordering::Relaxed);
         }
         removed
     }
