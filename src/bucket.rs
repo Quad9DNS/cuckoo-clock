@@ -1,4 +1,7 @@
-use std::borrow::{Borrow, BorrowMut};
+use std::{
+    borrow::{Borrow, BorrowMut},
+    io::{Read, Write},
+};
 
 use crate::{
     associated_data::AssociatedData,
@@ -23,6 +26,20 @@ impl Bucket {
         Self {
             data: vec![0; configuration.bucket_byte_size],
         }
+    }
+
+    /// Creates a new bucket based on exported state found in the provided reader.
+    ///
+    /// ## Panics
+    ///
+    /// Panics on OOM errors (if the requested bucket byte size is too high).
+    pub(crate) fn take_from(
+        mut reader: impl Read,
+        configuration: &CuckooConfiguration,
+    ) -> std::io::Result<Self> {
+        let mut data = vec![0; configuration.bucket_byte_size];
+        reader.read_exact(&mut data)?;
+        Ok(Self { data })
     }
 
     /// Inserts a new fingerprint into this bucket.
@@ -242,6 +259,20 @@ impl Bucket {
             }
         }
         removed
+    }
+
+    pub(crate) fn occupied_count(&self, configuration: &CuckooConfiguration) -> usize {
+        (0..configuration.bucket_size)
+            .map(|i| {
+                let size = configuration.data_block_size;
+                DataBlock::from(&self.data[(i * size)..((i + 1) * size)])
+            })
+            .filter(|db| db.occupied(configuration))
+            .count()
+    }
+
+    pub(crate) fn export(&self, mut writer: impl Write) -> std::io::Result<()> {
+        writer.write_all(&self.data)
     }
 
     fn get_data_block(

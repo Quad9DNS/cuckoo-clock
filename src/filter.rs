@@ -1,5 +1,6 @@
 use std::{
     hash::{BuildHasher, Hash, RandomState},
+    io::Read,
     iter::repeat_with,
     sync::{
         Arc, Mutex, MutexGuard,
@@ -12,6 +13,10 @@ use crate::{
     bucket::{Bucket, InsertValues, LookupValues},
     config::CuckooConfiguration,
     data_block::{DataBlock, Fingerprint},
+    exporter::{
+        CuckooFilterExporter, ExportableBuildHasher, ExportableRandomState, import_config,
+        read_hasher_from,
+    },
 };
 
 /// Thread-safe cuckoo filter, with support for TTL, LRU and custom counters associated with the
@@ -22,6 +27,12 @@ use crate::{
 /// freely access different buckets without conflicts. In most cases locks shouldn't block, because
 /// optimal cuckoo filter configuration will have a large number of buckets, reducing the change of
 /// concurrent access to the same bucket.
+///
+/// Instances of [`CuckooFilter`] build using [`CuckooFilter::new_random_exportable`] or with a
+/// [`BuildHasher`] that also implements [`ExportableBuildHasher`] can be exported and imported,
+/// using [`CuckooFilter::exporter`] and [`CuckooFilter::import`]. Note that configuration is
+/// stored in the exported data too and can't be changed, because any changes to the configuration
+/// data would invalidate all of the stored data.
 ///
 /// # Examples
 ///
@@ -79,6 +90,28 @@ use crate::{
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 ///
+/// Export/import
+/// ```
+/// use std::{collections::VecDeque, io::Read};
+/// use cuckoo_clock::{CuckooFilter, config::CuckooConfiguration};
+///
+/// let filter = CuckooFilter::new_random_exportable(CuckooConfiguration::builder(100_000).build()?);
+///
+/// // None returned from insertion means no entry was evicted
+/// assert!(filter.insert("example_data").is_none());
+///
+/// let mut buf = Vec::new();
+/// filter.exporter().read_into(&mut buf)?;
+///
+/// let mut buf = VecDeque::from(buf);
+/// let imported_filter = CuckooFilter::import_random_exportable(&mut buf)?;
+///
+/// // The inserted data is available in the imported filter
+/// assert!(filter.contains("example_data"));
+///
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+///
 #[derive(Clone)]
 pub struct CuckooFilter<H: BuildHasher> {
     configuration: CuckooConfiguration,
@@ -96,6 +129,63 @@ impl CuckooFilter<RandomState> {
     #[must_use]
     pub fn new_random(configuration: CuckooConfiguration) -> Self {
         Self::new(configuration, RandomState::new())
+    }
+}
+
+impl CuckooFilter<ExportableRandomState> {
+    /// Creates a new instance of [`CuckooFilter`], using [`ExportableBuildHasher`] based on
+    /// [`RandomState`] as its [`BuildHasher`].
+    /// This instance supports export using [`CuckooFilter::export`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if allocation of buckets fails (if too much memory was requested).
+    #[must_use]
+    pub fn new_random_exportable(configuration: CuckooConfiguration) -> Self {
+        Self::new(configuration, ExportableRandomState::new_random())
+    }
+
+    /// Creates a new instance of [`CuckooFilter`], using [`ExportableBuildHasher`] based on
+    /// exported data.
+    ///
+    /// # Panics
+    ///
+    /// Panics if allocation of buckets fails (if too much memory was requested).
+    pub fn import_random_exportable(reader: impl Read) -> Result<Self, crate::ImportError> {
+        Self::import(reader)
+    }
+}
+
+impl<H: ExportableBuildHasher + BuildHasher> CuckooFilter<H> {
+    /// Creates a cuckoo filter from its exported state.
+    ///
+    /// # Panics
+    ///
+    /// Panics if allocation of buckets fails (if too much memory was requested).
+    pub fn import(mut reader: impl Read) -> Result<Self, crate::ImportError> {
+        let hasher = read_hasher_from(&mut reader)?;
+        let configuration = import_config(&mut reader)?;
+        let mut buckets = Vec::with_capacity(configuration.bucket_count);
+
+        let mut item_count = 0;
+        for _ in 0..configuration.bucket_count {
+            let bucket = Bucket::take_from(&mut reader, &configuration)?;
+            item_count += bucket.occupied_count(&configuration);
+            buckets.push(Mutex::new(bucket));
+        }
+
+        Ok(Self {
+            configuration,
+            buckets: Arc::new(buckets),
+            build_hasher: hasher,
+            items: Arc::new(AtomicUsize::new(item_count)),
+        })
+    }
+
+    /// Prepares an exporter for this [`CuckooFilter`], enabling to persist it and import it later
+    /// using [`CuckooFilter::import`].
+    pub fn exporter<'a>(&'a self) -> CuckooFilterExporter<'a, H> {
+        CuckooFilterExporter::new(&self.build_hasher, &self.buckets, &self.configuration)
     }
 }
 
@@ -129,6 +219,11 @@ impl<H: BuildHasher> CuckooFilter<H> {
     /// Returns the actual number of items currently stored in this [`CuckooFilter`].
     pub fn get_item_count(&self) -> usize {
         self.items.load(Ordering::Relaxed)
+    }
+
+    /// Returns the configuration for this [`CuckooFilter`].
+    pub fn get_configuration(&self) -> CuckooConfiguration {
+        self.configuration.clone()
     }
 
     /// Returns the memory usage of this filter in bytes.
@@ -589,7 +684,11 @@ impl<H: BuildHasher> CuckooFilter<H> {
 #[cfg(test)]
 #[expect(clippy::unwrap_used)]
 mod tests {
-    use std::{collections::HashSet, hash::Hasher, ops::Range};
+    use std::{
+        collections::{HashSet, VecDeque},
+        hash::Hasher,
+        ops::Range,
+    };
 
     use crate::config::{CounterConfig, LruConfig, TtlConfig};
 
@@ -913,5 +1012,57 @@ mod tests {
             );
         }
         assert_eq!(filter.get_item_count(), 0);
+    }
+
+    #[test]
+    fn export_import() {
+        let words = get_words(0..100_000);
+        let filter = CuckooFilter::new_random_exportable(
+            CuckooConfiguration::builder(100_000)
+                .fingerprint_bits(32.try_into().unwrap())
+                .with_lru(LruConfig::default())
+                .with_ttl(TtlConfig {
+                    ttl: 3.try_into().unwrap(),
+                    ttl_bits: 2.try_into().unwrap(),
+                })
+                .build()
+                .unwrap(),
+        );
+
+        assert_eq!(filter.get_item_count(), 0);
+
+        let mut stored_words = HashSet::new();
+
+        for (index, word) in words.iter().enumerate() {
+            stored_words.insert(word);
+            if let Some(evicted_fp) = filter.insert(word) {
+                words[0..=index]
+                    .iter()
+                    .filter(|w| evicted_fp.matches_key(w, &filter))
+                    .for_each(|evicted_word| {
+                        stored_words.remove(evicted_word);
+                    });
+            }
+        }
+
+        assert_eq!(filter.get_item_count(), stored_words.len());
+
+        let exported_buf = filter.exporter().snapshot().unwrap();
+        let mut readable_buf = VecDeque::from(exported_buf);
+
+        let imported_filter = CuckooFilter::import_random_exportable(&mut readable_buf).unwrap();
+
+        assert_eq!(
+            imported_filter.get_configuration(),
+            filter.get_configuration()
+        );
+
+        assert_eq!(imported_filter.get_item_count(), stored_words.len());
+        for word in stored_words.iter() {
+            assert!(
+                imported_filter.contains(word),
+                "Word: {word} expected in the filter, but not found"
+            );
+        }
     }
 }

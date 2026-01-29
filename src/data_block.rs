@@ -79,7 +79,7 @@ impl From<u32> for Fingerprint {
 }
 
 /// Configuration for a field in a [`DataBlock`] (a single slot in a bucket).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DataBlockFieldConfiguration {
     /// Range of bytes that contain this field.
     /// Not all bytes are actually exclusive to this field.
@@ -202,6 +202,11 @@ impl<T: Borrow<[u8]>> DataBlock<T> {
     pub(crate) fn get_ttl(&self, configuration: &(TtlConfig, DataBlockFieldConfiguration)) -> u32 {
         self.load_bits(&configuration.1)
     }
+
+    /// Returns true if this slot is occupied
+    pub(crate) fn occupied(&self, configuration: &CuckooConfiguration) -> bool {
+        !self.get_fingerprint(configuration).is_empty()
+    }
 }
 
 impl<T: BorrowMut<[u8]>> DataBlock<T> {
@@ -227,11 +232,6 @@ impl<T: BorrowMut<[u8]>> DataBlock<T> {
         configuration: &CuckooConfiguration,
     ) {
         self.store_bits(&configuration.fingerprint_field_config, fingerprint.data);
-    }
-
-    /// Returns true if this slot is occupied
-    pub(crate) fn occupied(&self, configuration: &CuckooConfiguration) -> bool {
-        !self.get_fingerprint(configuration).is_empty()
     }
 
     /// Resets this data block by setting all bits to 0.

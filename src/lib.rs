@@ -21,7 +21,7 @@
 #![deny(clippy::cast_sign_loss)]
 #![deny(clippy::cast_possible_wrap)]
 #![deny(clippy::cast_precision_loss)]
-#![deny(clippy::unchecked_duration_subtraction)]
+#![deny(clippy::unchecked_time_subtraction)]
 #![warn(clippy::unwrap_used)]
 #![warn(clippy::expect_used)]
 #![deny(clippy::panicking_unwrap)]
@@ -37,9 +37,12 @@ mod associated_data;
 mod bucket;
 pub mod config;
 mod data_block;
+mod exporter;
 mod filter;
 
 pub use {
     associated_data::AssociatedData, bucket::InsertValues, bucket::LookupValues,
-    data_block::Fingerprint, filter::CuckooFilter,
+    data_block::Fingerprint, exporter::CuckooFilterExporter, exporter::ExportError,
+    exporter::ExportableBuildHasher, exporter::ExportableRandomState, exporter::ImportError,
+    filter::CuckooFilter,
 };

@@ -242,7 +242,7 @@ impl CuckooConfigurationBuilder {
 /// };
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LruConfig {
     /// Number of bits used to represent the LRU counter.
     /// Larger bit counts allow more values to be represented, allowing items to "accumulate"
@@ -273,7 +273,7 @@ impl Default for LruConfig {
 /// };
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TtlConfig {
     /// The default TTL counter value for newly inserted items. The actual lifetime duration will
     /// be defined by this value combined with the frequency of calls to
@@ -301,7 +301,7 @@ pub struct TtlConfig {
 /// };
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CounterConfig {
     /// How many bits are used to represent the generic counter.
     /// Larget bit counts allow higher counter values to be represented.
@@ -359,7 +359,7 @@ impl Default for CounterConfig {
 ///     .build()?;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CuckooConfiguration {
     pub(crate) bucket_size: usize,
     pub(crate) max_kicks: usize,
@@ -418,7 +418,7 @@ impl CuckooConfiguration {
 ///
 /// let bit_count: BitCount = 40.try_into().unwrap();
 /// ```
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BitCount(usize);
 
 impl BitCount {
@@ -481,6 +481,13 @@ impl From<BitCount> for u16 {
     #[expect(clippy::cast_possible_truncation)]
     fn from(value: BitCount) -> Self {
         value.0 as u16
+    }
+}
+
+impl From<BitCount> for u8 {
+    #[expect(clippy::cast_possible_truncation)]
+    fn from(value: BitCount) -> Self {
+        value.0 as u8
     }
 }
 

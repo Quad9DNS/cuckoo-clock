@@ -19,3 +19,10 @@ path = "fuzz_targets/filter.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "filter_export"
+path = "fuzz_targets/filter_export.rs"
+test = false
+doc = false
+bench = false

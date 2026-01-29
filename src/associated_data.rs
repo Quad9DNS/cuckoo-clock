@@ -130,6 +130,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(unused_assignments)]
     fn basic_fingerprint_access() {
         for bit_count in 1..=32 {
             let config = CuckooConfiguration::builder(1000)
@@ -184,6 +185,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(unused_assignments)]
     fn ttl_access() {
         for bit_count in 1..=32 {
             // No additional features
@@ -211,6 +213,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(unused_assignments)]
     fn lru_counter_access() {
         for bit_count in 1..=32 {
             // No additional features

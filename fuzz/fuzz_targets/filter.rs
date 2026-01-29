@@ -1,76 +1,12 @@
 #![no_main]
 
-use std::num::{NonZeroU32, NonZeroUsize};
+use cuckoo_clock::CuckooFilter;
+use libfuzzer_sys::{Corpus, fuzz_target};
 
-use cuckoo_clock::{
-    CuckooFilter,
-    config::{CuckooConfiguration, LruConfig, TtlConfig},
-};
-use libfuzzer_sys::{
-    Corpus,
-    arbitrary::{self, Arbitrary},
-    fuzz_target,
-};
-
-#[derive(Debug, Arbitrary)]
-struct LruConf {
-    bits: usize,
-}
-
-#[derive(Debug, Arbitrary)]
-struct TtlConf {
-    bits: usize,
-    ttl: NonZeroU32,
-}
-
-#[derive(Debug, Arbitrary)]
-struct CuckooConf {
-    max_entries: usize,
-    fingerprint_bits: usize,
-    bucket_size: NonZeroUsize,
-    lru: Option<LruConf>,
-    ttl: Option<TtlConf>,
-    inserts: Vec<String>,
-    lookups: Vec<String>,
-    deletes: Vec<String>,
-}
+use cuckoo_clock_fuzz::{CuckooConf, prep_config};
 
 fuzz_target!(|conf: CuckooConf| -> Corpus {
-    let required_bucket_count = conf.max_entries.div_ceil(conf.bucket_size.get());
-    let bucket_count = required_bucket_count.next_power_of_two();
-    if bucket_count.saturating_mul(conf.bucket_size.get()) > 2_000_000_000 / 8 {
-        return Corpus::Reject;
-    }
-
-    let mut config = CuckooConfiguration::builder(conf.max_entries)
-        .fingerprint_bits(if let Ok(bits) = conf.fingerprint_bits.try_into() {
-            bits
-        } else {
-            return Corpus::Reject;
-        })
-        .bucket_size(conf.bucket_size);
-
-    if let Some(lru) = conf.lru {
-        config = config.with_lru(LruConfig {
-            counter_bits: if let Ok(bits) = lru.bits.try_into() {
-                bits
-            } else {
-                return Corpus::Reject;
-            },
-        });
-    }
-    if let Some(ttl) = conf.ttl {
-        config = config.with_ttl(TtlConfig {
-            ttl: ttl.ttl,
-            ttl_bits: if let Ok(bits) = ttl.bits.try_into() {
-                bits
-            } else {
-                return Corpus::Reject;
-            },
-        });
-    }
-
-    let Ok(config) = config.build() else {
+    let Some(config) = prep_config(&conf) else {
         return Corpus::Reject;
     };
 
