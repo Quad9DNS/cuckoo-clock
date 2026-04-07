@@ -3,6 +3,11 @@ name = "cuckoo-clock"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+repository = "https://github.com/Quad9DNS/cuckoo-clock"
+homepage = "https://github.com/Quad9DNS/cuckoo-clock"
+readme = "README.md"
+authors = ["John Todd <jtodd@quad9.net>", "Ensar Sarajčić <dev@ensarsarajcic.com>"]
+description = "Cuckoo probabilistic filter with TTL, LRU, and counter features"
 
 [dependencies]
 rand = { version = "0.9.2", default-features = false, features = ["thread_rng"] }
