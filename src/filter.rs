@@ -101,7 +101,7 @@ use crate::{
 /// assert!(filter.insert("example_data").is_none());
 ///
 /// let mut buf = Vec::new();
-/// filter.exporter().read_into(&mut buf)?;
+/// filter.exporter().write_to(&mut buf)?;
 ///
 /// let mut buf = VecDeque::from(buf);
 /// let imported_filter = CuckooFilter::import_random_exportable(&mut buf)?;

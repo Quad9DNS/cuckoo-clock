@@ -220,7 +220,7 @@ impl<'a, H: ExportableBuildHasher> CuckooFilterExporter<'a, H> {
     /// [`crate::CuckooFilter`] operations, but it may result in a state which
     /// combines old values for some buckets and newer valus for some other buckets.
     /// The resulting state should still be valid.
-    pub fn read_into(&self, mut writer: impl Write) -> Result<(), ExportError> {
+    pub fn write_to(&self, mut writer: impl Write) -> Result<(), ExportError> {
         writer.write_all(format!("{}:{}:", HEADER, H::NAME).as_bytes())?;
         self.hasher.write_to(&mut writer)?;
         writer.write_all(HEADER_END.as_bytes())?;
@@ -243,7 +243,7 @@ impl<'a, H: ExportableBuildHasher> CuckooFilterExporter<'a, H> {
     /// made while exporting is in progress.
     pub fn snapshot(&self) -> Result<Vec<u8>, ExportError> {
         let mut result = Vec::new();
-        self.read_into(&mut result)?;
+        self.write_to(&mut result)?;
         Ok(result)
     }
 }
