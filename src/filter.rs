@@ -163,8 +163,30 @@ impl<H: ExportableBuildHasher + BuildHasher> CuckooFilter<H> {
     ///
     /// Panics if allocation of buckets fails (if too much memory was requested).
     pub fn import(mut reader: impl Read) -> Result<Self, crate::ImportError> {
-        let hasher = read_hasher_from(&mut reader)?;
-        let configuration = import_config(&mut reader)?;
+        let (hasher, configuration) = Self::import_config(&mut reader)?;
+        Self::import_state(hasher, configuration, reader)
+    }
+
+    /// Creates a cuckoo filter configuration from its exported state - skips the actual state.
+    pub fn import_config(
+        mut reader: impl Read,
+    ) -> Result<(H, CuckooConfiguration), crate::ImportError> {
+        let hasher = read_hasher_from::<H>(&mut reader)?;
+        let config = import_config(&mut reader)?;
+        Ok((hasher, config))
+    }
+
+    /// Creates a cuckoo filter from its exported state and already read hasher and configuration.
+    /// This assumes that these 2 were already read from the provided reader.
+    ///
+    /// # Panics
+    ///
+    /// Panics if allocation of buckets fails (if too much memory was requested).
+    pub fn import_state(
+        hasher: H,
+        configuration: CuckooConfiguration,
+        mut reader: impl Read,
+    ) -> Result<Self, crate::ImportError> {
         let mut buckets = Vec::with_capacity(configuration.bucket_count);
 
         let mut item_count = 0;
@@ -180,15 +202,6 @@ impl<H: ExportableBuildHasher + BuildHasher> CuckooFilter<H> {
             build_hasher: hasher,
             items: Arc::new(AtomicUsize::new(item_count)),
         })
-    }
-
-    /// Creates a cuckoo filter configuration from its exported state - skips the actual state.
-    pub fn import_config(
-        mut reader: impl Read,
-    ) -> Result<(H, CuckooConfiguration), crate::ImportError> {
-        let hasher = read_hasher_from::<H>(&mut reader)?;
-        let config = import_config(&mut reader)?;
-        Ok((hasher, config))
     }
 
     /// Prepares an exporter for this [`CuckooFilter`], enabling to persist it and import it later
