@@ -182,6 +182,15 @@ impl<H: ExportableBuildHasher + BuildHasher> CuckooFilter<H> {
         })
     }
 
+    /// Creates a cuckoo filter configuration from its exported state - skips the actual state.
+    pub fn import_config(
+        mut reader: impl Read,
+    ) -> Result<(H, CuckooConfiguration), crate::ImportError> {
+        let hasher = read_hasher_from::<H>(&mut reader)?;
+        let config = import_config(&mut reader)?;
+        Ok((hasher, config))
+    }
+
     /// Prepares an exporter for this [`CuckooFilter`], enabling to persist it and import it later
     /// using [`CuckooFilter::import`].
     pub fn exporter<'a>(&'a self) -> CuckooFilterExporter<'a, H> {
