@@ -2,6 +2,7 @@ use std::{
     hash::{BuildHasher, Hash, RandomState},
     io::Read,
     iter::repeat_with,
+    num::NonZeroUsize,
     sync::{
         Arc, Mutex, MutexGuard,
         atomic::{AtomicUsize, Ordering},
@@ -570,6 +571,19 @@ impl<H: BuildHasher> CuckooFilter<H> {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn scan_and_update_full(&self) -> usize {
+        #[expect(clippy::unwrap_used)]
+        self.scan_and_update_full_partition(NonZeroUsize::new(1).unwrap(), 0)
+    }
+
+    /// Scans a single group of buckets of this filter and reduces TTL and LRU counters.
+    ///
+    /// This is the same as [`CuckooFilter::scan_and_update_full`], but it more suitable for
+    /// parallelization, by splitting buckets into partitions to process in parallel.
+    pub fn scan_and_update_full_partition(
+        &self,
+        total_partitions: NonZeroUsize,
+        partition_index: usize,
+    ) -> usize {
         if self.configuration.lru_field_config.is_none()
             && self.configuration.ttl_field_config.is_none()
         {
@@ -577,7 +591,11 @@ impl<H: BuildHasher> CuckooFilter<H> {
         }
 
         let mut removed = 0;
-        for b in self.buckets.iter() {
+        let part_size = self.buckets.len() / total_partitions;
+        for b in self.buckets
+            [partition_index * part_size..self.buckets.len().min((partition_index + 1) * part_size)]
+            .iter()
+        {
             #[expect(clippy::unwrap_used)]
             let mut bucket = b.lock().unwrap();
             if let Some(lru_config) = &self.configuration.lru_field_config {
@@ -601,12 +619,29 @@ impl<H: BuildHasher> CuckooFilter<H> {
     ///
     /// This is a no-op if TTL is disabled.
     pub fn scan_and_update_ttl(&self) -> usize {
+        #[expect(clippy::unwrap_used)]
+        self.scan_and_update_ttl_partition(NonZeroUsize::new(1).unwrap(), 0)
+    }
+
+    /// Scans a single group of buckets of this filter and reduces TTL counters.
+    ///
+    /// This is the same as [`CuckooFilter::scan_and_update_ttl`], but it more suitable for
+    /// parallelization, by splitting buckets into partitions to process in parallel.
+    pub fn scan_and_update_ttl_partition(
+        &self,
+        total_partitions: NonZeroUsize,
+        partition_index: usize,
+    ) -> usize {
         if self.configuration.ttl_field_config.is_none() {
             return 0;
         }
 
         let mut removed = 0;
-        for b in self.buckets.iter() {
+        let part_size = self.buckets.len() / total_partitions;
+        for b in self.buckets
+            [partition_index * part_size..self.buckets.len().min((partition_index + 1) * part_size)]
+            .iter()
+        {
             #[expect(clippy::unwrap_used)]
             let mut bucket = b.lock().unwrap();
             if let Some(ttl_config) = &self.configuration.ttl_field_config {
@@ -627,11 +662,28 @@ impl<H: BuildHasher> CuckooFilter<H> {
     ///
     /// This is a no-op if LRU is disabled.
     pub fn scan_and_update_lru(&self) {
+        #[expect(clippy::unwrap_used)]
+        self.scan_and_update_lru_partition(NonZeroUsize::new(1).unwrap(), 0)
+    }
+
+    /// Scans a single group of buckets of this filter and reduces LRU counters.
+    ///
+    /// This is the same as [`CuckooFilter::scan_and_update_lru`], but it more suitable for
+    /// parallelization, by splitting buckets into partitions to process in parallel.
+    pub fn scan_and_update_lru_partition(
+        &self,
+        total_partitions: NonZeroUsize,
+        partition_index: usize,
+    ) {
         if self.configuration.lru_field_config.is_none() {
             return;
         }
 
-        for b in self.buckets.iter() {
+        let part_size = self.buckets.len() / total_partitions;
+        for b in self.buckets
+            [partition_index * part_size..self.buckets.len().min((partition_index + 1) * part_size)]
+            .iter()
+        {
             #[expect(clippy::unwrap_used)]
             let mut bucket = b.lock().unwrap();
             if let Some(lru_config) = &self.configuration.lru_field_config {
