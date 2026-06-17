@@ -592,6 +592,9 @@ impl<H: BuildHasher> CuckooFilter<H> {
 
         let mut removed = 0;
         let part_size = self.buckets.len().div_ceil(total_partitions.get());
+        if (partition_index * part_size) >= self.buckets.len() {
+            return 0;
+        }
         for b in self.buckets
             [partition_index * part_size..self.buckets.len().min((partition_index + 1) * part_size)]
             .iter()
@@ -638,6 +641,9 @@ impl<H: BuildHasher> CuckooFilter<H> {
 
         let mut removed = 0;
         let part_size = self.buckets.len().div_ceil(total_partitions.get());
+        if (partition_index * part_size) >= self.buckets.len() {
+            return 0;
+        }
         for b in self.buckets
             [partition_index * part_size..self.buckets.len().min((partition_index + 1) * part_size)]
             .iter()
@@ -680,6 +686,9 @@ impl<H: BuildHasher> CuckooFilter<H> {
         }
 
         let part_size = self.buckets.len().div_ceil(total_partitions.get());
+        if (partition_index * part_size) >= self.buckets.len() {
+            return;
+        }
         for b in self.buckets
             [partition_index * part_size..self.buckets.len().min((partition_index + 1) * part_size)]
             .iter()
