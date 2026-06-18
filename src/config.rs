@@ -2,11 +2,12 @@
 
 use std::{
     fmt::Display,
+    hash::RandomState,
     num::{NonZeroU32, NonZeroUsize},
     ops::{Add, Deref, DerefMut},
 };
 
-use crate::data_block::DataBlockFieldConfiguration;
+use crate::{CuckooFilter, data_block::DataBlockFieldConfiguration};
 
 /// Error type for all configuration options.
 #[derive(Debug)]
@@ -389,6 +390,15 @@ impl CuckooConfiguration {
             ttl: None,
             counter: None,
         }
+    }
+
+    /// Returns the memory usage of filter that would be created from this configuration in bytes.
+    #[must_use]
+    pub const fn get_configured_memory_usage(&self) -> usize {
+        CuckooFilter::<RandomState>::get_expected_memory_usage(
+            self.bucket_byte_size,
+            self.bucket_count,
+        )
     }
 }
 

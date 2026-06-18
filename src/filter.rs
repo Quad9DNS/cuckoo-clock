@@ -258,6 +258,18 @@ impl<H: BuildHasher> CuckooFilter<H> {
             + self.configuration.bucket_byte_size * self.buckets.len()
     }
 
+    /// Returns the expected memory usage of a filter created with provided parameters.
+    pub(crate) const fn get_expected_memory_usage(
+        bucket_byte_size: usize,
+        buckets: usize,
+    ) -> usize {
+        size_of::<Self>()
+            + size_of::<AtomicUsize>()
+            + size_of::<Vec<Mutex<Bucket>>>()
+            + size_of::<Mutex<Bucket>>() * buckets
+            + bucket_byte_size * buckets
+    }
+
     /// Inserts a new item into the filter, only if the filter doesn't contain it already.
     ///
     /// This is slower than [`CuckooFilter::insert`], but it ensures that no duplicates are present
