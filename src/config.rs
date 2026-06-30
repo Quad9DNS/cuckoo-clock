@@ -405,6 +405,56 @@ impl CuckooConfiguration {
             self.bucket_count,
         )
     }
+
+    /// Checks whether this and other configuration have a compatible layout.
+    ///
+    /// If this is true, filter exported by the other configuration can be imported and used with this
+    /// configuration. The only compatible configuration changes are generally ones that don't
+    /// affect size or count of the buckets and items.
+    #[must_use]
+    pub fn compatible_layout(&self, other: Self) -> bool {
+        if self.bucket_size != other.bucket_size {
+            return false;
+        }
+        if self.bucket_count != other.bucket_count {
+            return false;
+        }
+        if self.buckets_mask != other.buckets_mask {
+            return false;
+        }
+        if self.bucket_byte_size != other.bucket_byte_size {
+            return false;
+        }
+        if self.data_block_size != other.data_block_size {
+            return false;
+        }
+        if self.fingerprint_field_config != other.fingerprint_field_config {
+            return false;
+        }
+        if !Self::field_compatible(&self.lru_field_config, &other.lru_field_config) {
+            return false;
+        }
+        if !Self::field_compatible(&self.counter_field_config, &other.counter_field_config) {
+            return false;
+        }
+        if !Self::field_compatible(&self.ttl_field_config, &other.ttl_field_config) {
+            return false;
+        }
+        true
+    }
+
+    fn field_compatible<T>(
+        self_field: &Option<(T, DataBlockFieldConfiguration)>,
+        other_field: &Option<(T, DataBlockFieldConfiguration)>,
+    ) -> bool {
+        match (self_field, other_field) {
+            (None, Some(_)) | (Some(_), None) => false,
+            (None, None) => true,
+            (Some((_, self_field_config)), Some((_, other_field_config))) => {
+                self_field_config == other_field_config
+            }
+        }
+    }
 }
 
 /// Number of bits. Used to define sizes of the fields.
