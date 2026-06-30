@@ -229,11 +229,22 @@ impl Bucket {
         &mut self,
         configuration: &CuckooConfiguration,
         lru_config: &(LruConfig, DataBlockFieldConfiguration),
-    ) {
+    ) -> usize {
+        let mut removed = 0;
         for i in 0..configuration.bucket_size {
-            self.get_data_block(i, configuration)
-                .age_lru_counter(lru_config);
+            let db = self.get_data_block(i, configuration);
+            if db.occupied(configuration) {
+                removed += if self
+                    .get_data_block(i, configuration)
+                    .age_lru_counter(lru_config)
+                {
+                    1
+                } else {
+                    0
+                }
+            }
         }
+        removed
     }
 
     /// Ages all TTL counters in this bucket.

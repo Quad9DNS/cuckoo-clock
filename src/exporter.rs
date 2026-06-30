@@ -280,6 +280,8 @@ pub(crate) fn export_config(
     config: &CuckooConfiguration,
     mut writer: impl Write,
 ) -> Result<(), ExportError> {
+    // 0 as version start, and the rest is lib version
+    writer.write_all(&[0, 0, 2, 0])?;
     // Since we are reading a value from out field config, we know that it can't ever be higher
     // than 32 and should fit into u8.
     #[allow(clippy::expect_used)]
@@ -296,6 +298,7 @@ pub(crate) fn export_config(
     if let Some((lru, _)) = &config.lru_field_config {
         writer.write_all(&[1])?;
         writer.write_all(&u8::from(lru.counter_bits).to_be_bytes())?;
+        writer.write_all(&u8::from(lru.remove_on_zero).to_be_bytes())?;
     }
     if let Some((ttl, _)) = &config.ttl_field_config {
         writer.write_all(&[2])?;
@@ -316,6 +319,20 @@ pub(crate) fn import_config(mut reader: impl Read) -> Result<CuckooConfiguration
     let mut u32_buf = [0u8; 4];
     let mut u64_buf = [0u8; 8];
     reader.read_exact(&mut u8_buf)?;
+    let mut version: usize = 0;
+    if u8::from_be_bytes(u8_buf) == 0 {
+        // This is a version header
+        reader.read_exact(&mut u8_buf)?;
+        version += 1_000_000 * usize::from(u8::from_be_bytes(u8_buf));
+        reader.read_exact(&mut u8_buf)?;
+        version += 1_000_000 * usize::from(u8::from_be_bytes(u8_buf));
+        reader.read_exact(&mut u8_buf)?;
+        version += usize::from(u8::from_be_bytes(u8_buf));
+        reader.read_exact(&mut u8_buf)?;
+    } else {
+        // This is an old version (< 0.2.0) - without version header
+        version = 1_000;
+    }
     let fp_bits: BitCount = usize::from(u8::from_be_bytes(u8_buf)).try_into()?;
     reader.read_exact(&mut u64_buf)?;
     let bucket_size = u64::from_be_bytes(u64_buf);
@@ -333,8 +350,14 @@ pub(crate) fn import_config(mut reader: impl Read) -> Result<CuckooConfiguration
             1 => {
                 reader.read_exact(&mut u8_buf)?;
                 let bits = u8::from_be_bytes(u8_buf);
+                let mut remove_on_zero = false;
+                if version >= 2_000 {
+                    reader.read_exact(&mut u8_buf)?;
+                    remove_on_zero = u8::from_be_bytes(u8_buf) != 0;
+                }
                 builder = builder.with_lru(LruConfig {
                     counter_bits: (bits as usize).try_into()?,
+                    remove_on_zero,
                 });
             }
             2 => {

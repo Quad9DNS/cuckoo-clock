@@ -317,9 +317,15 @@ impl<T: BorrowMut<[u8]>> DataBlock<T> {
     pub(crate) fn age_lru_counter(
         &mut self,
         configuration: &(LruConfig, DataBlockFieldConfiguration),
-    ) {
+    ) -> bool {
         let counter = self.load_bits(&configuration.1);
-        self.store_bits(&configuration.1, counter >> 1);
+        if configuration.0.remove_on_zero && counter == 0 {
+            self.reset();
+            true
+        } else {
+            self.store_bits(&configuration.1, counter >> 1);
+            false
+        }
     }
 
     /// Ages the TTL counter, based on the provided [`DataBlockFieldConfiguration`] and clears out
@@ -456,6 +462,7 @@ mod tests {
             .fingerprint_bits(8.try_into().unwrap())
             .with_lru(LruConfig {
                 counter_bits: 2.try_into().unwrap(),
+                remove_on_zero: false,
             })
             .build()
             .unwrap();

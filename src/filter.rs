@@ -614,7 +614,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
             #[expect(clippy::unwrap_used)]
             let mut bucket = b.lock().unwrap();
             if let Some(lru_config) = &self.configuration.lru_field_config {
-                bucket.age_lru_counters(&self.configuration, lru_config);
+                removed += bucket.age_lru_counters(&self.configuration, lru_config)
             }
             if let Some(ttl_config) = &self.configuration.ttl_field_config {
                 removed += bucket.age_ttl_counters(&self.configuration, ttl_config);
@@ -679,7 +679,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
     /// allows more control, enabling different update frequency for TTL and LRU.
     ///
     /// This is a no-op if LRU is disabled.
-    pub fn scan_and_update_lru(&self) {
+    pub fn scan_and_update_lru(&self) -> usize {
         #[expect(clippy::unwrap_used)]
         self.scan_and_update_lru_partition(NonZeroUsize::new(1).unwrap(), 0)
     }
@@ -692,14 +692,15 @@ impl<H: BuildHasher> CuckooFilter<H> {
         &self,
         total_partitions: NonZeroUsize,
         partition_index: usize,
-    ) {
+    ) -> usize {
         if self.configuration.lru_field_config.is_none() {
-            return;
+            return 0;
         }
 
+        let mut removed = 0;
         let part_size = self.buckets.len().div_ceil(total_partitions.get());
         if (partition_index * part_size) >= self.buckets.len() {
-            return;
+            return removed;
         }
         for b in self.buckets
             [partition_index * part_size..self.buckets.len().min((partition_index + 1) * part_size)]
@@ -708,9 +709,11 @@ impl<H: BuildHasher> CuckooFilter<H> {
             #[expect(clippy::unwrap_used)]
             let mut bucket = b.lock().unwrap();
             if let Some(lru_config) = &self.configuration.lru_field_config {
-                bucket.age_lru_counters(&self.configuration, lru_config);
+                removed += bucket.age_lru_counters(&self.configuration, lru_config);
             }
         }
+
+        removed
     }
 
     /// Generates the fingerprint and first index for the provided key.
@@ -857,6 +860,7 @@ mod tests {
                 .bucket_size(2.try_into().unwrap())
                 .with_lru(LruConfig {
                     counter_bits: 8.try_into().unwrap(),
+                    remove_on_zero: false,
                 })
                 .build()
                 .unwrap(),
@@ -1100,6 +1104,85 @@ mod tests {
 
         // TTL should remove all entries now
         assert_eq!(filter.scan_and_update_full(), stored_words.len());
+        for word in &words {
+            assert!(
+                !filter.contains(word),
+                "Filter contained {word}, but shouldn't have"
+            );
+        }
+        assert_eq!(filter.get_item_count(), 0);
+    }
+
+    #[test]
+    fn scan_and_update_lru_deletion() {
+        let words = get_words(0..100_000);
+        let filter = CuckooFilter::new_random(
+            CuckooConfiguration::builder(100_000)
+                .fingerprint_bits(32.try_into().unwrap())
+                .with_lru(LruConfig {
+                    counter_bits: 2.try_into().unwrap(),
+                    remove_on_zero: true,
+                })
+                .build()
+                .unwrap(),
+        );
+
+        assert_eq!(filter.get_item_count(), 0);
+
+        let mut stored_words = HashSet::new();
+
+        for (index, word) in words.iter().enumerate() {
+            stored_words.insert(word);
+            if let Some(evicted_fp) = filter.insert_if_not_present(word) {
+                words[0..=index]
+                    .iter()
+                    .filter(|w| evicted_fp.matches_key(w, &filter))
+                    .for_each(|evicted_word| {
+                        stored_words.remove(evicted_word);
+                    });
+            }
+        }
+
+        let mut kept_words = HashSet::new();
+        for word in stored_words.clone().into_iter() {
+            kept_words.insert(word);
+            if let Some(evicted_fp) = filter.insert_if_not_present(word) {
+                words
+                    .iter()
+                    .filter(|w| evicted_fp.matches_key(w, &filter))
+                    .for_each(|evicted_word| {
+                        stored_words.remove(evicted_word);
+                        kept_words.remove(evicted_word);
+                    });
+            }
+        }
+
+        assert_eq!(filter.get_item_count(), stored_words.len());
+
+        for _ in 0..2 {
+            assert_eq!(filter.get_item_count(), stored_words.len());
+            assert_eq!(filter.scan_and_update_full(), 0);
+        }
+
+        assert_eq!(filter.get_item_count(), kept_words.len());
+        for word in kept_words.iter() {
+            assert!(
+                filter.contains(word),
+                "Word: {word} expected in the filter, but not found"
+            );
+        }
+        for word in stored_words.difference(&kept_words) {
+            assert!(
+                !filter.contains(word),
+                "Filter contained {word}, but shouldn't have"
+            );
+        }
+
+        // Contains check above incremented LRU counters again, lets bring them back to 0
+        assert_eq!(filter.scan_and_update_full(), 0);
+
+        // LRU should remove all entries now
+        assert_eq!(filter.scan_and_update_full(), kept_words.len());
         for word in &words {
             assert!(
                 !filter.contains(word),

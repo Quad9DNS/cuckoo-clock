@@ -6,6 +6,7 @@ use libfuzzer_sys::arbitrary::{self, Arbitrary};
 #[derive(Debug, Arbitrary)]
 pub struct LruConf {
     pub bits: usize,
+    pub remove_on_zero: bool,
 }
 
 #[derive(Debug, Arbitrary)]
@@ -48,6 +49,7 @@ pub fn prep_config(conf: &CuckooConf) -> Option<CuckooConfiguration> {
             } else {
                 return None;
             },
+            remove_on_zero: lru.remove_on_zero,
         });
     }
     if let Some(ttl) = &conf.ttl {
