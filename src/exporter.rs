@@ -421,7 +421,7 @@ impl ExportableConfig for LruAgingStrategy {
         match self {
             LruAgingStrategy::Halving => writer.write_all(&1u8.to_be_bytes())?,
             LruAgingStrategy::Decrement(value) => {
-                writer.write_all(&1u8.to_be_bytes())?;
+                writer.write_all(&2u8.to_be_bytes())?;
                 writer.write_all(&value.to_be_bytes())?;
             }
         }
