@@ -1,12 +1,30 @@
 use std::num::{NonZeroU32, NonZeroUsize};
 
-use cuckoo_clock::config::{CuckooConfiguration, LruConfig, TtlConfig};
+use cuckoo_clock::config::{CuckooConfiguration, LruAgingStrategy, LruConfig, TtlConfig};
 use libfuzzer_sys::arbitrary::{self, Arbitrary};
+
+#[derive(Debug, Arbitrary)]
+pub enum AgingStrategy {
+    Halving,
+    Decrement(u32),
+}
+
+impl From<&AgingStrategy> for LruAgingStrategy {
+    fn from(value: &AgingStrategy) -> Self {
+        match value {
+            AgingStrategy::Halving => Self::Halving,
+            AgingStrategy::Decrement(val) => Self::Decrement(*val),
+        }
+    }
+}
 
 #[derive(Debug, Arbitrary)]
 pub struct LruConf {
     pub bits: usize,
     pub remove_on_zero: bool,
+    pub aging_strategy: AgingStrategy,
+    pub starting_value: u32,
+    pub increment: u32,
 }
 
 #[derive(Debug, Arbitrary)]
@@ -50,6 +68,9 @@ pub fn prep_config(conf: &CuckooConf) -> Option<CuckooConfiguration> {
                 return None;
             },
             remove_on_zero: lru.remove_on_zero,
+            aging_strategy: LruAgingStrategy::from(&lru.aging_strategy),
+            starting_value: lru.starting_value,
+            increment: lru.increment,
         });
     }
     if let Some(ttl) = &conf.ttl {

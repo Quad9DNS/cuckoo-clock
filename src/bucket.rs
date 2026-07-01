@@ -92,7 +92,7 @@ impl Bucket {
 
     /// Kicks an item from this bucket, based on LRU - kicks out the lowest LRU counter item from
     /// this bucket, that has lower LRU counter than the new item. If the new item has the lowest
-    /// LRU counter, kick fails and false is returned. For completely new items (LRU counter == 0),
+    /// LRU counter, kick fails and false is returned. For completely new items (LRU counter == 1),
     /// insertion is guaranteed.
     ///
     /// Returns true if any item was kicked. Returns false if no item was kicked and the new item

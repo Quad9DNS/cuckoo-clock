@@ -297,13 +297,26 @@ impl<T: BorrowMut<[u8]>> DataBlock<T> {
         }
     }
 
+    /// Initializes the LRU counter, based on the provided [`DataBlockFieldConfiguration`].
+    pub(crate) fn init_lru_counter(
+        &mut self,
+        configuration: &(LruConfig, DataBlockFieldConfiguration),
+    ) {
+        let mut value = configuration.0.starting_value;
+        // Value mask is also the max possible value
+        if value > configuration.1.value_mask() {
+            value = configuration.1.value_mask();
+        }
+        self.store_bits(&configuration.1, value);
+    }
+
     /// Increments the LRU counter, based on the provided [`DataBlockFieldConfiguration`].
     pub(crate) fn inc_lru_counter(
         &mut self,
         configuration: &(LruConfig, DataBlockFieldConfiguration),
     ) {
         let counter = self.load_bits(&configuration.1);
-        let mut new_counter = counter.saturating_add(1);
+        let mut new_counter = counter.saturating_add(configuration.0.increment);
         // Value mask is also the max possible value
         if new_counter > configuration.1.value_mask() {
             new_counter = configuration.1.value_mask();
@@ -323,7 +336,10 @@ impl<T: BorrowMut<[u8]>> DataBlock<T> {
             self.reset();
             true
         } else {
-            self.store_bits(&configuration.1, counter >> 1);
+            self.store_bits(
+                &configuration.1,
+                configuration.0.aging_strategy.age_value(counter),
+            );
             false
         }
     }
@@ -462,7 +478,7 @@ mod tests {
             .fingerprint_bits(8.try_into().unwrap())
             .with_lru(LruConfig {
                 counter_bits: 2.try_into().unwrap(),
-                remove_on_zero: false,
+                ..Default::default()
             })
             .build()
             .unwrap();

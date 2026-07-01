@@ -229,6 +229,26 @@ impl CuckooConfigurationBuilder {
     }
 }
 
+/// Strategy to use when aging LRU counter on scans.
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum LruAgingStrategy {
+    /// Halving the counter value each scan. Useful to age the items more quickly.
+    #[default]
+    Halving,
+    /// Reduces the counter by a fixed amount each scan.
+    Decrement(u32),
+}
+
+impl LruAgingStrategy {
+    pub(crate) const fn age_value(&self, value: u32) -> u32 {
+        match self {
+            LruAgingStrategy::Halving => value >> 1,
+            LruAgingStrategy::Decrement(dec) => value.saturating_sub(*dec),
+        }
+    }
+}
+
 /// Configuration for the LRU field.
 ///
 /// Used to define memory used by the LRU field, also affecting its maximum value.
@@ -240,7 +260,7 @@ impl CuckooConfigurationBuilder {
 ///
 /// let ttl_config = LruConfig {
 ///     counter_bits: 5.try_into()?,
-///     remove_on_zero: false
+///     ..Default::default()
 /// };
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
@@ -250,15 +270,24 @@ pub struct LruConfig {
     /// Larger bit counts allow more values to be represented, allowing items to "accumulate"
     /// higher use counts, which will take longer to age.
     pub counter_bits: BitCount,
+    /// The strategy to use when aging LRU counters.
+    pub aging_strategy: LruAgingStrategy,
+    /// The starting value for LRU counter to use.
+    pub starting_value: u32,
     /// If set to true, items that already have a 0 counter value will be removed at scan time.
     pub remove_on_zero: bool,
+    /// Increment to add to LRU counter on each insert and lookup.
+    pub increment: u32,
 }
 
 impl Default for LruConfig {
     fn default() -> Self {
         Self {
             counter_bits: BitCount(8),
+            aging_strategy: LruAgingStrategy::default(),
+            starting_value: 1,
             remove_on_zero: false,
+            increment: 1,
         }
     }
 }
@@ -358,7 +387,7 @@ impl Default for CounterConfig {
 ///     })
 ///     .with_lru(LruConfig {
 ///         counter_bits: 6.try_into()?,
-///         remove_on_zero: false
+///         ..Default::default()
 ///     })
 ///     .bucket_size(4.try_into()?)
 ///     .max_kicks(8)

@@ -221,7 +221,7 @@ mod tests {
                 .fingerprint_bits(5.try_into().unwrap())
                 .with_lru(LruConfig {
                     counter_bits: bit_count.try_into().unwrap(),
-                    remove_on_zero: false,
+                    ..Default::default()
                 })
                 .build()
                 .unwrap();

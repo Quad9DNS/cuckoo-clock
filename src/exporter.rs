@@ -7,7 +7,9 @@ use std::{
 
 use crate::{
     bucket::Bucket,
-    config::{BitCount, CounterConfig, CuckooConfiguration, LruConfig, TtlConfig},
+    config::{
+        BitCount, CounterConfig, CuckooConfiguration, LruAgingStrategy, LruConfig, TtlConfig,
+    },
 };
 
 /// Error type for import operations.
@@ -119,19 +121,24 @@ impl From<std::io::Error> for ExportError {
 const HEADER: &str = "cuckoo-clock:";
 const HEADER_END: &str = ":header-end\n";
 
+/// A trait representing objects that can be exported (e.g. persisted into a file).
+///
+/// This trait is needed for [`cuckoo_clock::CuckooFilter::export`].
+pub trait Exportable: Clone {
+    /// Writes the state of this object into the provided writer.
+    fn write_to(&self, writer: impl Write) -> Result<(), ExportError>;
+
+    /// Reads the stored state to create an instance of this object.
+    fn read_from(reader: impl Read) -> Result<Self, ImportError>;
+}
+
 /// A trait representing [`BuildHasher`] instances that can be exported (e.g. persisted into a file).
 ///
 /// This trait is needed for [`cuckoo_clock::CuckooFilter::export`].
-pub trait ExportableBuildHasher: BuildHasher + Clone {
+pub trait ExportableBuildHasher: Exportable + BuildHasher {
     /// Unique of this [`ExportableBuildHasher`]. This will be stored in the header of exported
     /// data.
     const NAME: &str;
-
-    /// Writes the inner state of this instance into the provided writer.
-    fn write_to(&self, writer: impl Write) -> std::io::Result<()>;
-
-    /// Reads the stored inner state to create an instance of this hasher.
-    fn read_from(reader: impl Read) -> std::io::Result<Self>;
 }
 
 /// Implementation of [`ExportableRandomState`], similar to [`std::hash::RandomState`].
@@ -171,10 +178,8 @@ impl BuildHasher for ExportableRandomState {
     }
 }
 
-impl ExportableBuildHasher for ExportableRandomState {
-    const NAME: &str = "cuckoo_clock::exporter::ExportableRandomState";
-
-    fn write_to(&self, mut writer: impl Write) -> std::io::Result<()> {
+impl Exportable for ExportableRandomState {
+    fn write_to(&self, mut writer: impl Write) -> Result<(), ExportError> {
         let k0 = self.k0.to_be_bytes();
         let k1 = self.k1.to_be_bytes();
         writer.write_all(&k0)?;
@@ -182,7 +187,7 @@ impl ExportableBuildHasher for ExportableRandomState {
         Ok(())
     }
 
-    fn read_from(mut reader: impl Read) -> std::io::Result<Self> {
+    fn read_from(mut reader: impl Read) -> Result<Self, ImportError> {
         let mut buf = [0u8; 8];
         reader.read_exact(&mut buf)?;
         let k0 = u64::from_be_bytes(buf);
@@ -190,6 +195,10 @@ impl ExportableBuildHasher for ExportableRandomState {
         let k1 = u64::from_be_bytes(buf);
         Ok(Self { k0, k1 })
     }
+}
+
+impl ExportableBuildHasher for ExportableRandomState {
+    const NAME: &str = "cuckoo_clock::exporter::ExportableRandomState";
 }
 
 /// Exporter for [`crate::CuckooFilter`].
@@ -225,7 +234,7 @@ impl<'a, H: ExportableBuildHasher> CuckooFilterExporter<'a, H> {
         self.hasher.write_to(&mut writer)?;
         writer.write_all(HEADER_END.as_bytes())?;
 
-        export_config(self.config, &mut writer)?;
+        self.config.write_to(&mut writer)?;
         writer.write_all(b"\n")?;
 
         for b in self.buckets.iter() {
@@ -276,117 +285,209 @@ pub(crate) fn read_hasher_from<H: ExportableBuildHasher + BuildHasher>(
     Ok(hasher)
 }
 
-pub(crate) fn export_config(
-    config: &CuckooConfiguration,
-    mut writer: impl Write,
-) -> Result<(), ExportError> {
-    // 0 as version start, and the rest is lib version
-    writer.write_all(&[0, 0, 2, 0])?;
-    // Since we are reading a value from out field config, we know that it can't ever be higher
-    // than 32 and should fit into u8.
-    #[allow(clippy::expect_used)]
-    // Value mask is calculated as bits ^ 2 - 1, so we get back the bit count with ilog2
-    writer.write_all(
-        &u8::try_from((config.fingerprint_field_config.value_mask() as usize + 1).ilog2())
-            .expect("Fingeprint bits can't be higher than 32")
-            .to_be_bytes(),
-    )?;
-    writer.write_all(&(config.bucket_size as u64).to_be_bytes())?;
-    // Max entries
-    writer.write_all(&((config.bucket_count * config.bucket_size) as u64).to_be_bytes())?;
-    writer.write_all(&(config.max_kicks as u64).to_be_bytes())?;
-    if let Some((lru, _)) = &config.lru_field_config {
-        writer.write_all(&[1])?;
-        writer.write_all(&u8::from(lru.counter_bits).to_be_bytes())?;
-        writer.write_all(&u8::from(lru.remove_on_zero).to_be_bytes())?;
+impl Exportable for CuckooConfiguration {
+    fn write_to(&self, mut writer: impl std::io::Write) -> Result<(), crate::ExportError> {
+        // 0 as version start, and the rest is lib version
+        writer.write_all(&[0, 0, 2, 2])?;
+        // Since we are reading a value from out field config, we know that it can't ever be higher
+        // than 32 and should fit into u8.
+        #[allow(clippy::expect_used)]
+        // Value mask is calculated as bits ^ 2 - 1, so we get back the bit count with ilog2
+        writer.write_all(
+            &u8::try_from((self.fingerprint_field_config.value_mask() as usize + 1).ilog2())
+                .expect("Fingeprint bits can't be higher than 32")
+                .to_be_bytes(),
+        )?;
+        writer.write_all(&(self.bucket_size as u64).to_be_bytes())?;
+        // Max entries
+        writer.write_all(&((self.bucket_count * self.bucket_size) as u64).to_be_bytes())?;
+        writer.write_all(&(self.max_kicks as u64).to_be_bytes())?;
+        if let Some((lru, _)) = &self.lru_field_config {
+            writer.write_all(&[1])?;
+            lru.write_to(&mut writer)?;
+        }
+        if let Some((ttl, _)) = &self.ttl_field_config {
+            writer.write_all(&[2])?;
+            ttl.write_to(&mut writer)?;
+        }
+        if let Some((counter, _)) = &self.counter_field_config {
+            writer.write_all(&[3])?;
+            counter.write_to(&mut writer)?;
+        }
+        Ok(())
     }
-    if let Some((ttl, _)) = &config.ttl_field_config {
-        writer.write_all(&[2])?;
-        writer.write_all(&ttl.ttl.get().to_be_bytes())?;
-        writer.write_all(&u8::from(ttl.ttl_bits).to_be_bytes())?;
+
+    fn read_from(mut reader: impl std::io::Read) -> Result<Self, crate::ImportError> {
+        let mut u8_buf = [0u8; 1];
+        let mut u64_buf = [0u8; 8];
+        reader.read_exact(&mut u8_buf)?;
+        let mut version: usize = 0;
+        if u8::from_be_bytes(u8_buf) == 0 {
+            // This is a version header
+            reader.read_exact(&mut u8_buf)?;
+            version += 1_000_000 * usize::from(u8::from_be_bytes(u8_buf));
+            reader.read_exact(&mut u8_buf)?;
+            version += 1_000 * usize::from(u8::from_be_bytes(u8_buf));
+            reader.read_exact(&mut u8_buf)?;
+            version += usize::from(u8::from_be_bytes(u8_buf));
+            reader.read_exact(&mut u8_buf)?;
+        } else {
+            // This is an old version (< 0.2.0) - without version header
+            version = 1_000;
+        }
+        let fp_bits: BitCount = usize::from(u8::from_be_bytes(u8_buf)).try_into()?;
+        reader.read_exact(&mut u64_buf)?;
+        let bucket_size = u64::from_be_bytes(u64_buf);
+        reader.read_exact(&mut u64_buf)?;
+        let max_entries = u64::from_be_bytes(u64_buf);
+        reader.read_exact(&mut u64_buf)?;
+        let max_kicks = u64::from_be_bytes(u64_buf);
+        let mut builder = CuckooConfiguration::builder(max_entries.try_into()?)
+            .fingerprint_bits(fp_bits)
+            .bucket_size(usize::try_from(bucket_size)?.try_into()?)
+            .max_kicks(max_kicks.try_into()?);
+        while let Ok(()) = reader.read_exact(&mut u8_buf) {
+            let conf_type = u8::from_be_bytes(u8_buf);
+            match conf_type {
+                1 => {
+                    builder = builder.with_lru(LruConfig::read_from(&mut reader, version)?);
+                }
+                2 => {
+                    builder = builder.with_ttl(TtlConfig::read_from(&mut reader, version)?);
+                }
+                3 => {
+                    builder = builder.with_counter(CounterConfig::read_from(&mut reader, version)?);
+                }
+                // We can't handle this type, so abort
+                // TODO: return an error?
+                _ => break,
+            }
+        }
+        Ok(builder.build()?)
     }
-    if let Some((counter, _)) = &config.counter_field_config {
-        writer.write_all(&[3])?;
-        writer.write_all(&u8::from(counter.counter_bits).to_be_bytes())?;
-        writer.write_all(&counter.change_on_insert.to_be_bytes())?;
-        writer.write_all(&counter.change_on_lookup.to_be_bytes())?;
-    }
-    Ok(())
 }
 
-pub(crate) fn import_config(mut reader: impl Read) -> Result<CuckooConfiguration, ImportError> {
-    let mut u8_buf = [0u8; 1];
-    let mut u32_buf = [0u8; 4];
-    let mut u64_buf = [0u8; 8];
-    reader.read_exact(&mut u8_buf)?;
-    let mut version: usize = 0;
-    if u8::from_be_bytes(u8_buf) == 0 {
-        // This is a version header
-        reader.read_exact(&mut u8_buf)?;
-        version += 1_000_000 * usize::from(u8::from_be_bytes(u8_buf));
-        reader.read_exact(&mut u8_buf)?;
-        version += 1_000_000 * usize::from(u8::from_be_bytes(u8_buf));
-        reader.read_exact(&mut u8_buf)?;
-        version += usize::from(u8::from_be_bytes(u8_buf));
-        reader.read_exact(&mut u8_buf)?;
-    } else {
-        // This is an old version (< 0.2.0) - without version header
-        version = 1_000;
+/// A trait representing config objects that can be exported (e.g. persisted into a file).
+pub(crate) trait ExportableConfig: Clone {
+    /// Writes the state of this object into the provided writer.
+    fn write_to(&self, writer: impl Write) -> Result<(), ExportError>;
+
+    /// Reads the stored state to create an instance of this object.
+    fn read_from(reader: impl Read, version: usize) -> Result<Self, ImportError>;
+}
+
+impl ExportableConfig for LruConfig {
+    fn write_to(&self, mut writer: impl Write) -> Result<(), ExportError> {
+        writer.write_all(&u8::from(self.counter_bits).to_be_bytes())?;
+        writer.write_all(&u8::from(self.remove_on_zero).to_be_bytes())?;
+        self.aging_strategy.write_to(&mut writer)?;
+        writer.write_all(&self.starting_value.to_be_bytes())?;
+        writer.write_all(&self.increment.to_be_bytes())?;
+        Ok(())
     }
-    let fp_bits: BitCount = usize::from(u8::from_be_bytes(u8_buf)).try_into()?;
-    reader.read_exact(&mut u64_buf)?;
-    let bucket_size = u64::from_be_bytes(u64_buf);
-    reader.read_exact(&mut u64_buf)?;
-    let max_entries = u64::from_be_bytes(u64_buf);
-    reader.read_exact(&mut u64_buf)?;
-    let max_kicks = u64::from_be_bytes(u64_buf);
-    let mut builder = CuckooConfiguration::builder(max_entries.try_into()?)
-        .fingerprint_bits(fp_bits)
-        .bucket_size(usize::try_from(bucket_size)?.try_into()?)
-        .max_kicks(max_kicks.try_into()?);
-    while let Ok(()) = reader.read_exact(&mut u8_buf) {
-        let conf_type = u8::from_be_bytes(u8_buf);
-        match conf_type {
-            1 => {
-                reader.read_exact(&mut u8_buf)?;
-                let bits = u8::from_be_bytes(u8_buf);
-                let mut remove_on_zero = false;
-                if version >= 2_000 {
-                    reader.read_exact(&mut u8_buf)?;
-                    remove_on_zero = u8::from_be_bytes(u8_buf) != 0;
-                }
-                builder = builder.with_lru(LruConfig {
-                    counter_bits: (bits as usize).try_into()?,
-                    remove_on_zero,
-                });
+
+    fn read_from(mut reader: impl Read, version: usize) -> Result<Self, ImportError> {
+        let mut u8_buf = [0u8; 1];
+        let mut u32_buf = [0u8; 4];
+        reader.read_exact(&mut u8_buf)?;
+        let bits = u8::from_be_bytes(u8_buf);
+        let mut remove_on_zero = false;
+        let mut aging_strategy = LruAgingStrategy::default();
+        let mut increment = 1;
+        let mut starting_value = 1;
+        if version >= 2_000 {
+            reader.read_exact(&mut u8_buf)?;
+            remove_on_zero = u8::from_be_bytes(u8_buf) != 0;
+        }
+        if version >= 2_002 {
+            aging_strategy = LruAgingStrategy::read_from(&mut reader, version)?;
+            reader.read_exact(&mut u32_buf)?;
+            starting_value = u32::from_be_bytes(u32_buf);
+            reader.read_exact(&mut u32_buf)?;
+            increment = u32::from_be_bytes(u32_buf);
+        }
+        Ok(Self {
+            counter_bits: (bits as usize).try_into()?,
+            aging_strategy,
+            starting_value,
+            remove_on_zero,
+            increment,
+        })
+    }
+}
+
+impl ExportableConfig for LruAgingStrategy {
+    fn write_to(&self, mut writer: impl Write) -> Result<(), ExportError> {
+        match self {
+            LruAgingStrategy::Halving => writer.write_all(&1u8.to_be_bytes())?,
+            LruAgingStrategy::Decrement(value) => {
+                writer.write_all(&1u8.to_be_bytes())?;
+                writer.write_all(&value.to_be_bytes())?;
             }
+        }
+        Ok(())
+    }
+
+    fn read_from(mut reader: impl Read, _version: usize) -> Result<Self, ImportError> {
+        let mut u8_buf = [0u8; 1];
+        let mut u32_buf = [0u8; 4];
+        reader.read_exact(&mut u8_buf)?;
+        let strategy = u8::from_be_bytes(u8_buf);
+        match strategy {
+            1 => Ok(Self::Halving),
             2 => {
                 reader.read_exact(&mut u32_buf)?;
-                let ttl = u32::from_be_bytes(u32_buf);
-                reader.read_exact(&mut u8_buf)?;
-                let bits = u8::from_be_bytes(u8_buf);
-                builder = builder.with_ttl(TtlConfig {
-                    ttl: ttl.try_into()?,
-                    ttl_bits: (bits as usize).try_into()?,
-                });
+                let value = u32::from_be_bytes(u32_buf);
+                Ok(Self::Decrement(value))
             }
-            3 => {
-                reader.read_exact(&mut u8_buf)?;
-                let bits = u8::from_be_bytes(u8_buf);
-                reader.read_exact(&mut u32_buf)?;
-                let change_on_insert = i32::from_be_bytes(u32_buf);
-                reader.read_exact(&mut u32_buf)?;
-                let change_on_lookup = i32::from_be_bytes(u32_buf);
-                builder = builder.with_counter(CounterConfig {
-                    counter_bits: (bits as usize).try_into()?,
-                    change_on_insert,
-                    change_on_lookup,
-                });
-            }
-            // We can't handle this type, so abort
-            // TODO: return an error?
-            _ => break,
+            // TODO: error for this?
+            _ => Ok(Self::default()),
         }
     }
-    Ok(builder.build()?)
+}
+
+impl ExportableConfig for TtlConfig {
+    fn write_to(&self, mut writer: impl Write) -> Result<(), ExportError> {
+        writer.write_all(&self.ttl.get().to_be_bytes())?;
+        writer.write_all(&u8::from(self.ttl_bits).to_be_bytes())?;
+        Ok(())
+    }
+
+    fn read_from(mut reader: impl Read, _version: usize) -> Result<Self, ImportError> {
+        let mut u8_buf = [0u8; 1];
+        let mut u32_buf = [0u8; 4];
+        reader.read_exact(&mut u32_buf)?;
+        let ttl = u32::from_be_bytes(u32_buf);
+        reader.read_exact(&mut u8_buf)?;
+        let bits = u8::from_be_bytes(u8_buf);
+        Ok(Self {
+            ttl: ttl.try_into()?,
+            ttl_bits: (bits as usize).try_into()?,
+        })
+    }
+}
+
+impl ExportableConfig for CounterConfig {
+    fn write_to(&self, mut writer: impl Write) -> Result<(), ExportError> {
+        writer.write_all(&u8::from(self.counter_bits).to_be_bytes())?;
+        writer.write_all(&self.change_on_insert.to_be_bytes())?;
+        writer.write_all(&self.change_on_lookup.to_be_bytes())?;
+        Ok(())
+    }
+
+    fn read_from(mut reader: impl Read, _version: usize) -> Result<Self, ImportError> {
+        let mut u8_buf = [0u8; 1];
+        let mut u32_buf = [0u8; 4];
+        reader.read_exact(&mut u8_buf)?;
+        let bits = u8::from_be_bytes(u8_buf);
+        reader.read_exact(&mut u32_buf)?;
+        let change_on_insert = i32::from_be_bytes(u32_buf);
+        reader.read_exact(&mut u32_buf)?;
+        let change_on_lookup = i32::from_be_bytes(u32_buf);
+        Ok(Self {
+            counter_bits: (bits as usize).try_into()?,
+            change_on_insert,
+            change_on_lookup,
+        })
+    }
 }

@@ -15,7 +15,7 @@ use crate::{
     config::CuckooConfiguration,
     data_block::{DataBlock, Fingerprint},
     exporter::{
-        CuckooFilterExporter, ExportableBuildHasher, ExportableRandomState, import_config,
+        CuckooFilterExporter, Exportable, ExportableBuildHasher, ExportableRandomState,
         read_hasher_from,
     },
 };
@@ -173,7 +173,7 @@ impl<H: ExportableBuildHasher + BuildHasher> CuckooFilter<H> {
         mut reader: impl Read,
     ) -> Result<(H, CuckooConfiguration), crate::ImportError> {
         let hasher = read_hasher_from::<H>(&mut reader)?;
-        let config = import_config(&mut reader)?;
+        let config = CuckooConfiguration::read_from(&mut reader)?;
         Ok((hasher, config))
     }
 
@@ -738,7 +738,7 @@ impl<H: BuildHasher> CuckooFilter<H> {
             );
         }
         if let Some(lru_config) = self.configuration.lru_field_config.as_ref() {
-            cur_data_block.inc_lru_counter(lru_config);
+            cur_data_block.init_lru_counter(lru_config);
         }
         cur_data_block
     }
@@ -860,7 +860,7 @@ mod tests {
                 .bucket_size(2.try_into().unwrap())
                 .with_lru(LruConfig {
                     counter_bits: 8.try_into().unwrap(),
-                    remove_on_zero: false,
+                    ..Default::default()
                 })
                 .build()
                 .unwrap(),
@@ -1122,6 +1122,7 @@ mod tests {
                 .with_lru(LruConfig {
                     counter_bits: 2.try_into().unwrap(),
                     remove_on_zero: true,
+                    ..Default::default()
                 })
                 .build()
                 .unwrap(),
@@ -1183,6 +1184,68 @@ mod tests {
 
         // LRU should remove all entries now
         assert_eq!(filter.scan_and_update_full(), kept_words.len());
+        for word in &words {
+            assert!(
+                !filter.contains(word),
+                "Filter contained {word}, but shouldn't have"
+            );
+        }
+        assert_eq!(filter.get_item_count(), 0);
+    }
+
+    #[test]
+    fn scan_and_update_lru_deletion_decrement_strategy() {
+        let words = get_words(0..100_000);
+        let filter = CuckooFilter::new_random(
+            CuckooConfiguration::builder(100_000)
+                .fingerprint_bits(32.try_into().unwrap())
+                .with_lru(LruConfig {
+                    counter_bits: 2.try_into().unwrap(),
+                    starting_value: 3,
+                    aging_strategy: crate::config::LruAgingStrategy::Decrement(1),
+                    remove_on_zero: true,
+                    ..Default::default()
+                })
+                .build()
+                .unwrap(),
+        );
+
+        assert_eq!(filter.get_item_count(), 0);
+
+        let mut stored_words = HashSet::new();
+
+        for (index, word) in words.iter().enumerate() {
+            stored_words.insert(word);
+            if let Some(evicted_fp) = filter.insert_if_not_present(word) {
+                words[0..=index]
+                    .iter()
+                    .filter(|w| evicted_fp.matches_key(w, &filter))
+                    .for_each(|evicted_word| {
+                        stored_words.remove(evicted_word);
+                    });
+            }
+        }
+
+        assert_eq!(filter.get_item_count(), stored_words.len());
+
+        for _ in 0..3 {
+            assert_eq!(filter.get_item_count(), stored_words.len());
+            assert_eq!(filter.scan_and_update_full(), 0);
+        }
+
+        assert_eq!(filter.get_item_count(), stored_words.len());
+        for word in stored_words.iter() {
+            assert!(
+                filter.contains(word),
+                "Word: {word} expected in the filter, but not found"
+            );
+        }
+
+        // Contains check above incremented LRU counters again, lets bring them back to 0
+        assert_eq!(filter.scan_and_update_full(), 0);
+
+        // LRU should remove all entries now
+        assert_eq!(filter.scan_and_update_full(), stored_words.len());
         for word in &words {
             assert!(
                 !filter.contains(word),
