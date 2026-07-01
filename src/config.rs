@@ -441,7 +441,7 @@ impl CuckooConfiguration {
     /// configuration. The only compatible configuration changes are generally ones that don't
     /// affect size or count of the buckets and items.
     #[must_use]
-    pub fn compatible_layout(&self, other: Self) -> bool {
+    pub fn compatible_layout(&self, other: &Self) -> bool {
         if self.bucket_size != other.bucket_size {
             return false;
         }
