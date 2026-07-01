@@ -339,14 +339,21 @@ impl<H: BuildHasher> CuckooFilter<H> {
         }
 
         let mut cur_index = if rand::random::<bool>() { i1 } else { i2 };
+        let mut new_item = true;
         for _ in 0..self.configuration.max_kicks {
             {
                 let mut bucket = self.lock_bucket(cur_index as usize);
                 // Replace a random item first
                 if let Some(lru_config) = self.configuration.lru_field_config.as_ref() {
-                    if !bucket.kick_lru(&mut cur_data_block, &self.configuration, lru_config) {
+                    if !bucket.kick_lru(
+                        &mut cur_data_block,
+                        &self.configuration,
+                        lru_config,
+                        new_item,
+                    ) {
                         return Some(cur_data_block.get_fingerprint(&self.configuration));
                     }
+                    new_item = false;
                 } else {
                     bucket.kick_random(&mut cur_data_block, &self.configuration);
                 }
@@ -418,14 +425,21 @@ impl<H: BuildHasher> CuckooFilter<H> {
         }
 
         let mut cur_index = i1;
+        let mut new_item = true;
         for _ in 0..self.configuration.max_kicks {
             {
                 let mut bucket = self.lock_bucket(cur_index as usize);
                 // Replace a random item first
                 if let Some(lru_config) = self.configuration.lru_field_config.as_ref() {
-                    if !bucket.kick_lru(&mut cur_data_block, &self.configuration, lru_config) {
+                    if !bucket.kick_lru(
+                        &mut cur_data_block,
+                        &self.configuration,
+                        lru_config,
+                        new_item,
+                    ) {
                         return Some(cur_data_block.get_fingerprint(&self.configuration));
                     }
+                    new_item = false;
                 } else {
                     // TODO: this can even kick the newest item, which is not ideal
                     bucket.kick_random(&mut cur_data_block, &self.configuration);

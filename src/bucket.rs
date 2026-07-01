@@ -92,8 +92,7 @@ impl Bucket {
 
     /// Kicks an item from this bucket, based on LRU - kicks out the lowest LRU counter item from
     /// this bucket, that has lower LRU counter than the new item. If the new item has the lowest
-    /// LRU counter, kick fails and false is returned. For completely new items (LRU counter == 1),
-    /// insertion is guaranteed.
+    /// LRU counter, kick fails and false is returned. For completely new items insertion is guaranteed.
     ///
     /// Returns true if any item was kicked. Returns false if no item was kicked and the new item
     /// was not moved out of [`DataBlock`].
@@ -102,11 +101,10 @@ impl Bucket {
         data_block: &mut DataBlock<T>,
         configuration: &CuckooConfiguration,
         lru_config: &(LruConfig, DataBlockFieldConfiguration),
+        new_item: bool,
     ) -> bool {
         let mut min = data_block.get_lru_counter(lru_config);
-        if min == 1 {
-            // TODO: What happens if LRU is really at 1?
-            // Currently 1 is the default for new items
+        if new_item {
             min = u32::MAX;
         }
         let mut pos = configuration.bucket_size;
