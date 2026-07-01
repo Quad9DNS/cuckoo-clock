@@ -288,7 +288,7 @@ pub(crate) fn read_hasher_from<H: ExportableBuildHasher + BuildHasher>(
 impl Exportable for CuckooConfiguration {
     fn write_to(&self, mut writer: impl std::io::Write) -> Result<(), crate::ExportError> {
         // 0 as version start, and the rest is lib version
-        writer.write_all(&[0, 0, 2, 2])?;
+        writer.write_all(&[0, 0, 2, 4])?;
         // Since we are reading a value from out field config, we know that it can't ever be higher
         // than 32 and should fit into u8.
         #[allow(clippy::expect_used)]
