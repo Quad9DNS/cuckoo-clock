@@ -727,6 +727,9 @@ impl<H: BuildHasher> CuckooFilter<H> {
             }
         }
 
+        if removed > 0 {
+            self.items.fetch_sub(removed, Ordering::Relaxed);
+        }
         removed
     }
 
