@@ -472,6 +472,52 @@ impl CuckooConfiguration {
         true
     }
 
+    /// Returns the configured bucket size.
+    #[must_use]
+    pub const fn bucket_size(&self) -> usize {
+        self.bucket_size
+    }
+
+    /// Returns the configured max kicks.
+    #[must_use]
+    pub const fn max_kicks(&self) -> usize {
+        self.max_kicks
+    }
+
+    /// Returns the LRU configuration, if available.
+    #[must_use]
+    pub fn lru_config(&self) -> Option<LruConfig> {
+        self.lru_field_config
+            .as_ref()
+            .map(|(lru, _field)| lru.clone())
+    }
+
+    /// Returns the TTL configuration, if available.
+    #[must_use]
+    pub fn ttl_config(&self) -> Option<TtlConfig> {
+        self.ttl_field_config
+            .as_ref()
+            .map(|(ttl, _field)| ttl.clone())
+    }
+
+    /// Returns the counter configuration, if available.
+    #[must_use]
+    pub fn counter_config(&self) -> Option<CounterConfig> {
+        self.counter_field_config
+            .as_ref()
+            .map(|(counter, _field)| counter.clone())
+    }
+
+    /// Returns the actual bucket count for this [`CuckooConfiguration`].
+    ///
+    /// Bucket count is calculated as first next power of two of capacity / bucket_size.
+    /// This means that the actual capacity of the filter is usually bigger than the requested
+    /// capacity.
+    #[must_use]
+    pub const fn get_bucket_count(&self) -> usize {
+        self.bucket_count
+    }
+
     fn field_compatible<T>(
         self_field: &Option<(T, DataBlockFieldConfiguration)>,
         other_field: &Option<(T, DataBlockFieldConfiguration)>,
