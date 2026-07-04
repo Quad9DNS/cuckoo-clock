@@ -15,6 +15,9 @@ pub enum ConfigError {
     /// Error due to requesting buckets that are too big to represent (requiring over [`usize::MAX`]
     /// bytes).
     BucketTooBig,
+    /// Error due to requesting bucket count that is too big to represent (requiring over [`usize::MAX`]
+    /// buckets). This is affected by `max_entries` and `bucket_size`.
+    BucketCountTooBig,
     /// Error due to requesting more than 32 bits for any of the fields (fingerprint or associated
     /// field).
     BitCountTooHigh,
@@ -28,6 +31,9 @@ impl Display for ConfigError {
         match self {
             ConfigError::BucketTooBig => {
                 f.write_str("Filter configuration requires buckets that are too big!")
+            }
+            ConfigError::BucketCountTooBig => {
+                f.write_str("Filter configuration requires bucket count that is too high! Reduce max number of entries or increase bucket size.")
             }
             ConfigError::BitCountTooHigh => f.write_str(&format!(
                 "Bit count is too high! Max is {}.",
@@ -147,7 +153,9 @@ impl CuckooConfigurationBuilder {
     /// rounded to byte).
     pub fn build(&self) -> Result<CuckooConfiguration, ConfigError> {
         let required_bucket_count = self.max_entries.div_ceil(self.bucket_size.get());
-        let bucket_count = required_bucket_count.next_power_of_two();
+        let bucket_count = required_bucket_count
+            .checked_next_power_of_two()
+            .ok_or(ConfigError::BucketCountTooBig)?;
         let ttl_start = *self.fingerprint_bits
             + if let Some(LruConfig { counter_bits, .. }) = self.lru {
                 *counter_bits

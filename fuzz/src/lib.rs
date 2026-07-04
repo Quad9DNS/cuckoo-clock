@@ -47,7 +47,7 @@ pub struct CuckooConf {
 
 pub fn prep_config(conf: &CuckooConf) -> Option<CuckooConfiguration> {
     let required_bucket_count = conf.max_entries.div_ceil(conf.bucket_size.get());
-    let bucket_count = required_bucket_count.next_power_of_two();
+    let bucket_count = required_bucket_count.checked_next_power_of_two()?;
     if bucket_count.saturating_mul(conf.bucket_size.get()) > 2_000_000_000 / 8 {
         return None;
     }
