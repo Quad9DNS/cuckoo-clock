@@ -24,6 +24,9 @@ jobs:
         with:
           target: ${{ matrix.target }}
 
+      - name: Install words
+        run: sudo apt-get update -y && sudo apt-get -y install wamerican
+
       - name: Run checks
         run: make lint
 
